@@ -14,9 +14,13 @@ and this document.
 - `MAX_SOURCE_IDS_PER_ENTITY=99999`
 - `MAX_SOURCE_IDS_PER_RELATION=99999`
 - Conservative document pipeline concurrency: `MAX_PARALLEL_INSERT=2`
+- Build-time reranker disabled by default. Query-time reranker enabled by
+  default.
 
 The embedding and reranker do not use HTTP ports in this build script. They are
 loaded with `SentenceTransformer` and `CrossEncoder` inside the Python process.
+The CrossEncoder is only attached for query runs unless you explicitly pass
+`--enable-build-rerank`.
 
 ## What Is Not Migrated
 
@@ -119,9 +123,51 @@ Important report files:
 
 ## Query Smoke Test
 
-After a build, use the official LightRAG API or a short SDK script against the
-same `WORKSPACE`, `WORKING_DIR`, Neo4j, and Qdrant settings. Use rerank only
-when the local CrossEncoder can fit on the selected GPU.
+Put a question in a file:
+
+```bash
+cat >/tmp/lightrag_question.txt <<'EOF'
+请总结这批文档里的核心实体和关系。
+EOF
+```
+
+Then query the built workspace:
+
+```bash
+python scripts/build_internal_lightrag.py \
+  --env-file configs/local-qwen3vl.env \
+  --query-file /tmp/lightrag_question.txt \
+  --query-only \
+  --top-k 40 \
+  --chunk-top-k 20
+```
+
+You can also query inline:
+
+```bash
+python scripts/build_internal_lightrag.py \
+  --env-file configs/local-qwen3vl.env \
+  --query "请回答这个库里 Lund 相关项目的主要内容。" \
+  --query-only
+```
+
+Query rerank is on by default and loads the local
+`/data/h50056787/models/bge-reranker-v2-m3` CrossEncoder in the query process.
+If GPU memory is tight, add `--disable-query-rerank`. The build path still does
+not attach or load the reranker.
+
+Do not edit official `lightrag/constants.py` just to tune retrieval. Use env or
+CLI:
+
+- `TOP_K` / `--top-k`
+- `CHUNK_TOP_K` / `--chunk-top-k`
+- `MAX_ENTITY_TOKENS`, `MAX_RELATION_TOKENS`, `MAX_TOTAL_TOKENS`
+
+Official LightRAG reranks retrieved candidates, not the whole database. For
+vector chunks, `_get_vector_context` first queries Qdrant with
+`search_top_k = chunk_top_k or top_k`. Then `process_chunks_unified` sends that
+deduplicated candidate list to the reranker with `top_n = chunk_top_k or
+len(unique_chunks)`.
 
 ## Official LightRAG Concurrency
 
@@ -139,3 +185,37 @@ LightRAG concurrency is layered:
 There is no RAG_LUND-style `RAGANYTHING_MULTIMODAL_ITEM_PARALLELISM` switch in
 official LightRAG. Multimodal load is controlled by `VLM_PROCESS_ENABLE`,
 `VLM_MAX_ASYNC_LLM`, parser/analyze worker settings, and base LLM concurrency.
+
+This local profile sets:
+
+- `MAX_PARALLEL_INSERT=2`
+- `MAX_ASYNC=16`, matching the RAG_LUND LLM async default rather than official
+  LightRAG's `4`
+- `EMBEDDING_FUNC_MAX_ASYNC=4`
+- `EMBEDDING_BATCH_NUM=4`
+- `MAX_ASYNC_RERANK=1`
+- `VLM_MAX_ASYNC_LLM=1`
+- `MAX_PARALLEL_PARSE_NATIVE=2`
+- `MAX_PARALLEL_PARSE_MINERU=1`
+- `MAX_PARALLEL_PARSE_DOCLING=1`
+- `MAX_PARALLEL_ANALYZE=1`
+
+For local Qwen3-VL, keep MinerU/Docling parse and multimodal analyze at `1`
+until you have measured GPU memory. Native text parse can stay at `2` because
+it is much lighter.
+
+## Multimodal Token Guard
+
+RAG_LUND previously hit multimodal chunks above `65536` tokens. This adapter
+does not patch official LightRAG source; it uses official guards:
+
+- `MAX_EXTRACT_INPUT_TOKENS=20480`
+- `EMBEDDING_TOKEN_LIMIT=8192`
+
+Official `pipeline.py` trims multimodal analysis/extraction input against
+`MAX_EXTRACT_INPUT_TOKENS` and errors if a single frame or sidecar cannot fit.
+If a document still exceeds the local model context, lower
+`MAX_EXTRACT_INPUT_TOKENS`, reduce parser options in `LIGHTRAG_PARSER` (for
+example fewer image/table/equation analyses), or process that document class
+separately. Raising the value is possible only if your served Qwen3-VL context
+actually supports it.

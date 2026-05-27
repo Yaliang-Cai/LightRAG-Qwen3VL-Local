@@ -23,6 +23,8 @@ DEFAULT_MODEL = "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
 DEFAULT_VLLM_API_BASE = "http://localhost:8001/v1"
 DEFAULT_EMBEDDING_MODEL = "/data/h50056787/models/bge-m3"
 DEFAULT_RERANK_MODEL = "/data/h50056787/models/bge-reranker-v2-m3"
+DEFAULT_MAX_ASYNC = 16
+DEFAULT_EMBEDDING_BATCH_NUM = 4
 DEFAULT_EXTENSIONS = (
     ".pdf,.jpg,.jpeg,.png,.bmp,.tiff,.tif,.gif,.webp,"
     ".doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md"
@@ -77,6 +79,14 @@ class BuildConfig:
     recursive: bool
     extensions: tuple[str, ...]
     dry_run: bool
+    enable_build_rerank: bool
+    enable_query_rerank: bool
+    query: str | None
+    query_file: Path | None
+    query_only: bool
+    query_mode: str
+    top_k: int | None
+    chunk_top_k: int | None
 
 
 def _repo_root() -> Path:
@@ -189,6 +199,17 @@ def _write_json(path: Path, payload: Any) -> None:
     )
 
 
+def _resolve_query_text(args: argparse.Namespace) -> str | None:
+    if args.query and args.query_file:
+        raise ValueError("Use only one of --query or --query-file.")
+    if args.query:
+        return str(args.query).strip()
+    if args.query_file:
+        query_path = Path(args.query_file).expanduser()
+        return query_path.read_text(encoding="utf-8").strip()
+    return None
+
+
 def _build_config(args: argparse.Namespace) -> BuildConfig:
     storage_root = Path(args.storage_root).expanduser() if args.storage_root else DEFAULT_STORAGE_ROOT
     workspace = args.workspace or os.getenv("WORKSPACE", DEFAULT_WORKSPACE)
@@ -220,6 +241,14 @@ def _build_config(args: argparse.Namespace) -> BuildConfig:
         recursive=not args.no_recursive,
         extensions=_parse_extensions(args.extensions),
         dry_run=bool(args.dry_run),
+        enable_build_rerank=bool(args.enable_build_rerank),
+        enable_query_rerank=bool(args.enable_query_rerank),
+        query=_resolve_query_text(args),
+        query_file=Path(args.query_file).expanduser() if args.query_file else None,
+        query_only=bool(args.query_only),
+        query_mode=str(args.query_mode),
+        top_k=args.top_k,
+        chunk_top_k=args.chunk_top_k,
     )
 
 
@@ -242,9 +271,21 @@ def _apply_runtime_env(config: BuildConfig) -> None:
         "RAGANYTHING_EMBEDDING_MODEL_PATH": DEFAULT_EMBEDDING_MODEL,
         "RAGANYTHING_RERANK_MODEL_PATH": DEFAULT_RERANK_MODEL,
         "RAGANYTHING_EMBEDDING_DIM": "1024",
-        "RAGANYTHING_EMBEDDING_BATCH_NUM": "32",
+        "RAGANYTHING_EMBEDDING_BATCH_NUM": str(DEFAULT_EMBEDDING_BATCH_NUM),
         "RAGANYTHING_RERANK_BATCH_SIZE": "8",
+        "MAX_ASYNC": str(DEFAULT_MAX_ASYNC),
+        "MAX_ASYNC_RERANK": "1",
+        "EMBEDDING_FUNC_MAX_ASYNC": "4",
+        "EMBEDDING_BATCH_NUM": str(DEFAULT_EMBEDDING_BATCH_NUM),
+        "MAX_PARALLEL_PARSE_NATIVE": "2",
+        "MAX_PARALLEL_PARSE_MINERU": "1",
+        "MAX_PARALLEL_PARSE_DOCLING": "1",
+        "MAX_PARALLEL_ANALYZE": "1",
+        "MAX_EXTRACT_INPUT_TOKENS": "20480",
+        "EMBEDDING_TOKEN_LIMIT": "8192",
+        "RERANK_BY_DEFAULT": "true",
         "VLM_PROCESS_ENABLE": "true",
+        "VLM_MAX_ASYNC_LLM": "1",
     }
     for key, value in defaults.items():
         os.environ.setdefault(key, value)
@@ -252,6 +293,104 @@ def _apply_runtime_env(config: BuildConfig) -> None:
     os.environ["WORKING_DIR"] = config.working_dir.as_posix()
     os.environ["INPUT_DIR"] = config.input_dir.as_posix()
     os.environ["MAX_PARALLEL_INSERT"] = str(config.max_parallel_insert)
+
+
+def _settings_summary(config: BuildConfig, files: list[Path] | None = None) -> dict[str, Any]:
+    keys = (
+        "LLM_MODEL_NAME",
+        "VLLM_API_BASE",
+        "RAGANYTHING_EMBEDDING_MODEL_PATH",
+        "RAGANYTHING_RERANK_MODEL_PATH",
+        "RAGANYTHING_EMBEDDING_DIM",
+        "RAGANYTHING_EMBEDDING_BATCH_NUM",
+        "MAX_ASYNC",
+        "MAX_ASYNC_RERANK",
+        "EMBEDDING_FUNC_MAX_ASYNC",
+        "EMBEDDING_BATCH_NUM",
+        "MAX_PARALLEL_INSERT",
+        "MAX_PARALLEL_PARSE_NATIVE",
+        "MAX_PARALLEL_PARSE_MINERU",
+        "MAX_PARALLEL_PARSE_DOCLING",
+        "MAX_PARALLEL_ANALYZE",
+        "VLM_PROCESS_ENABLE",
+        "VLM_MAX_ASYNC_LLM",
+        "MAX_EXTRACT_INPUT_TOKENS",
+        "EMBEDDING_TOKEN_LIMIT",
+        "MAX_SOURCE_IDS_PER_ENTITY",
+        "MAX_SOURCE_IDS_PER_RELATION",
+        "SOURCE_IDS_LIMIT_METHOD",
+        "RERANK_BY_DEFAULT",
+        "LIGHTRAG_PARSER",
+        "NEO4J_URI",
+        "NEO4J_DATABASE",
+        "QDRANT_URL",
+    )
+    return {
+        "workspace": config.workspace,
+        "raw_dir": config.raw_dir.as_posix(),
+        "working_dir": config.working_dir.as_posix(),
+        "input_dir": config.input_dir.as_posix(),
+        "report_dir": config.report_dir.as_posix(),
+        "extensions": config.extensions,
+        "recursive": config.recursive,
+        "dry_run": config.dry_run,
+        "query_only": config.query_only,
+        "enable_build_rerank": config.enable_build_rerank,
+        "enable_query_rerank": config.enable_query_rerank,
+        "query_mode": config.query_mode,
+        "top_k": config.top_k,
+        "chunk_top_k": config.chunk_top_k,
+        "file_count": len(files) if files is not None else None,
+        "env": {key: os.getenv(key) for key in keys if os.getenv(key) is not None},
+    }
+
+
+def _log_settings(config: BuildConfig, files: list[Path] | None = None) -> None:
+    summary = _settings_summary(config, files)
+    LOGGER.info("Workspace: %s", summary["workspace"])
+    LOGGER.info("Raw dir: %s", summary["raw_dir"])
+    LOGGER.info("Working dir: %s", summary["working_dir"])
+    LOGGER.info("Input dir: %s", summary["input_dir"])
+    LOGGER.info("Report dir: %s", summary["report_dir"])
+    LOGGER.info(
+        "Model: %s via %s",
+        summary["env"].get("LLM_MODEL_NAME"),
+        summary["env"].get("VLLM_API_BASE"),
+    )
+    LOGGER.info(
+        "Embedding: %s dim=%s batch=%s max_async=%s token_limit=%s",
+        summary["env"].get("RAGANYTHING_EMBEDDING_MODEL_PATH"),
+        summary["env"].get("RAGANYTHING_EMBEDDING_DIM"),
+        summary["env"].get("EMBEDDING_BATCH_NUM"),
+        summary["env"].get("EMBEDDING_FUNC_MAX_ASYNC"),
+        summary["env"].get("EMBEDDING_TOKEN_LIMIT"),
+    )
+    LOGGER.info(
+        "Concurrency: insert=%s llm=%s vlm=%s parse_native=%s parse_mineru=%s parse_docling=%s analyze=%s",
+        summary["env"].get("MAX_PARALLEL_INSERT"),
+        summary["env"].get("MAX_ASYNC"),
+        summary["env"].get("VLM_MAX_ASYNC_LLM"),
+        summary["env"].get("MAX_PARALLEL_PARSE_NATIVE"),
+        summary["env"].get("MAX_PARALLEL_PARSE_MINERU"),
+        summary["env"].get("MAX_PARALLEL_PARSE_DOCLING"),
+        summary["env"].get("MAX_PARALLEL_ANALYZE"),
+    )
+    LOGGER.info(
+        "Rerank: build=%s query=%s default_env=%s max_async=%s",
+        summary["enable_build_rerank"],
+        summary["enable_query_rerank"],
+        summary["env"].get("RERANK_BY_DEFAULT"),
+        summary["env"].get("MAX_ASYNC_RERANK"),
+    )
+    LOGGER.info(
+        "Token/source caps: max_extract=%s max_source_entity=%s max_source_relation=%s",
+        summary["env"].get("MAX_EXTRACT_INPUT_TOKENS"),
+        summary["env"].get("MAX_SOURCE_IDS_PER_ENTITY"),
+        summary["env"].get("MAX_SOURCE_IDS_PER_RELATION"),
+    )
+    LOGGER.info("Parser routing: %s", summary["env"].get("LIGHTRAG_PARSER", "<official default>"))
+    if files is not None:
+        LOGGER.info("Selected files: %d", len(files))
 
 
 def _make_llm_func():
@@ -291,7 +430,10 @@ def _make_embedding_func():
     model_path = os.getenv("RAGANYTHING_EMBEDDING_MODEL_PATH", DEFAULT_EMBEDDING_MODEL)
     device = os.getenv("RAGANYTHING_DEVICE", "cuda:0")
     dim = _env_int("RAGANYTHING_EMBEDDING_DIM", 1024)
-    batch_num = _env_int("RAGANYTHING_EMBEDDING_BATCH_NUM", _env_int("EMBEDDING_BATCH_NUM", 32))
+    batch_num = _env_int(
+        "RAGANYTHING_EMBEDDING_BATCH_NUM",
+        _env_int("EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM),
+    )
     model_holder: dict[str, SentenceTransformer] = {}
 
     def get_model() -> SentenceTransformer:
@@ -439,31 +581,34 @@ async def _collect_doc_status(rag: Any) -> dict[str, Any]:
     return {"count": len(documents), "total": total, "documents": documents}
 
 
-async def _run_build(config: BuildConfig, files: list[Path]) -> dict[str, Any]:
+def _make_rag(config: BuildConfig, include_reranker: bool) -> Any:
     from lightrag import LightRAG
     from lightrag.llm_roles import RoleLLMConfig
-    from lightrag.utils import generate_track_id
 
     llm_func = _make_llm_func()
     embedding_func = _make_embedding_func()
-    rerank_func = _make_rerank_func()
-    track_id = generate_track_id("internal_lightrag")
+    rerank_func = _make_rerank_func() if include_reranker else None
+    if include_reranker:
+        LOGGER.info("Reranker is enabled for this run.")
+    else:
+        LOGGER.info("Reranker is disabled for this run; no CrossEncoder will be attached.")
+
     config.working_dir.mkdir(parents=True, exist_ok=True)
     config.input_dir.mkdir(parents=True, exist_ok=True)
 
-    rag = LightRAG(
+    return LightRAG(
         working_dir=config.working_dir.as_posix(),
         workspace=config.workspace,
         llm_model_func=llm_func,
         llm_model_name=os.getenv("LLM_MODEL_NAME", DEFAULT_MODEL),
-        llm_model_max_async=_env_int("MAX_ASYNC", 4),
+        llm_model_max_async=_env_int("MAX_ASYNC", DEFAULT_MAX_ASYNC),
         llm_model_kwargs={},
         default_llm_timeout=_env_int("LLM_TIMEOUT", 1800),
         embedding_func=embedding_func,
         embedding_func_max_async=_env_int("EMBEDDING_FUNC_MAX_ASYNC", 4),
-        embedding_batch_num=_env_int("EMBEDDING_BATCH_NUM", 32),
+        embedding_batch_num=_env_int("EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM),
         rerank_model_func=rerank_func,
-        rerank_model_max_async=_env_int("MAX_ASYNC_RERANK", 2),
+        rerank_model_max_async=_env_int("MAX_ASYNC_RERANK", 1),
         default_rerank_timeout=_env_int("RERANK_TIMEOUT", 120),
         min_rerank_score=float(os.getenv("MIN_RERANK_SCORE", "0.3")),
         max_parallel_insert=config.max_parallel_insert,
@@ -477,7 +622,7 @@ async def _run_build(config: BuildConfig, files: list[Path]) -> dict[str, Any]:
         role_llm_configs={
             "vlm": RoleLLMConfig(
                 func=llm_func,
-                max_async=_env_int("VLM_MAX_ASYNC_LLM", 2),
+                max_async=_env_int("VLM_MAX_ASYNC_LLM", 1),
                 timeout=_env_int("LLM_TIMEOUT", 1800),
                 metadata={
                     "binding": "openai",
@@ -488,28 +633,53 @@ async def _run_build(config: BuildConfig, files: list[Path]) -> dict[str, Any]:
         },
     )
 
+
+async def _run_build(config: BuildConfig, files: list[Path]) -> dict[str, Any]:
+    from lightrag.utils import generate_track_id
+
+    track_id = generate_track_id("internal_lightrag")
+    rag = _make_rag(config, include_reranker=config.enable_build_rerank)
+
     enqueued: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     start = time.time()
     try:
+        LOGGER.info("Initializing LightRAG storages.")
         await rag.initialize_storages()
-        for source in files:
+        for index, source in enumerate(files, start=1):
             try:
+                LOGGER.info(
+                    "Enqueue start [%d/%d]: %s size=%d bytes",
+                    index,
+                    len(files),
+                    source,
+                    source.stat().st_size,
+                )
                 record = await _enqueue_file(rag, source, config, track_id)
                 enqueued.append(record)
                 LOGGER.info(
-                    "Enqueued %s parser=%s options=%s",
+                    "Enqueue done [%d/%d]: %s parser=%s options=%s staged=%s seconds=%.2f",
+                    index,
+                    len(files),
                     source.name,
                     record["parser"],
                     record["process_options"],
+                    record["staged"],
+                    record["enqueue_seconds"],
                 )
             except Exception as exc:
                 LOGGER.exception("Failed to enqueue %s", source)
                 failures.append({"source": source.as_posix(), "error": str(exc)})
         if enqueued:
+            LOGGER.info("Processing enqueue queue: %d document(s).", len(enqueued))
             await rag.apipeline_process_enqueue_documents()
+            LOGGER.info("Processing queue finished.")
+        else:
+            LOGGER.warning("No documents were enqueued; skipping process queue.")
+        LOGGER.info("Collecting document status.")
         documents = await _collect_doc_status(rag)
     finally:
+        LOGGER.info("Finalizing LightRAG storages.")
         await rag.finalize_storages()
 
     return {
@@ -520,6 +690,53 @@ async def _run_build(config: BuildConfig, files: list[Path]) -> dict[str, Any]:
         "enqueued": enqueued,
         "failures": failures,
         "documents": documents,
+    }
+
+
+async def _run_query(config: BuildConfig, query_text: str) -> dict[str, Any]:
+    from lightrag.base import QueryParam
+
+    rag = _make_rag(config, include_reranker=config.enable_query_rerank)
+    param_kwargs: dict[str, Any] = {
+        "mode": config.query_mode,
+        "stream": False,
+        "enable_rerank": config.enable_query_rerank,
+    }
+    if config.top_k is not None:
+        param_kwargs["top_k"] = config.top_k
+    if config.chunk_top_k is not None:
+        param_kwargs["chunk_top_k"] = config.chunk_top_k
+    param = QueryParam(**param_kwargs)
+    start = time.time()
+    try:
+        LOGGER.info("Initializing LightRAG storages for query.")
+        await rag.initialize_storages()
+        LOGGER.info(
+            "Query start: mode=%s top_k=%s chunk_top_k=%s rerank=%s",
+            param.mode,
+            param.top_k,
+            param.chunk_top_k,
+            param.enable_rerank,
+        )
+        response = await rag.aquery(query_text, param=param)
+        LOGGER.info("Query finished in %.2f seconds.", time.time() - start)
+    finally:
+        LOGGER.info("Finalizing LightRAG storages after query.")
+        await rag.finalize_storages()
+
+    return {
+        "query": query_text,
+        "response": response,
+        "elapsed_seconds": time.time() - start,
+        "query_param": {
+            "mode": param.mode,
+            "top_k": param.top_k,
+            "chunk_top_k": param.chunk_top_k,
+            "enable_rerank": param.enable_rerank,
+            "max_entity_tokens": param.max_entity_tokens,
+            "max_relation_tokens": param.max_relation_tokens,
+            "max_total_tokens": param.max_total_tokens,
+        },
     }
 
 
@@ -539,6 +756,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--extensions", default=os.getenv("LIGHTRAG_BUILD_EXTENSIONS", DEFAULT_EXTENSIONS))
     parser.add_argument("--no-recursive", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--enable-build-rerank", action="store_true")
+    parser.add_argument("--query", default=None)
+    parser.add_argument("--query-file", default=None)
+    parser.add_argument("--query-only", action="store_true")
+    parser.add_argument(
+        "--query-mode",
+        default=os.getenv("LIGHTRAG_QUERY_MODE", "mix"),
+        choices=("local", "global", "hybrid", "naive", "mix", "bypass"),
+    )
+    parser.add_argument("--top-k", type=int, default=None)
+    parser.add_argument("--chunk-top-k", type=int, default=None)
+    query_rerank_group = parser.add_mutually_exclusive_group()
+    query_rerank_group.add_argument(
+        "--enable-query-rerank",
+        dest="enable_query_rerank",
+        action="store_true",
+        default=True,
+    )
+    query_rerank_group.add_argument(
+        "--disable-query-rerank",
+        dest="enable_query_rerank",
+        action="store_false",
+    )
     return parser
 
 
@@ -551,11 +791,12 @@ def main(argv: list[str] | None = None) -> int:
     log_file = _setup_logging(config.report_dir)
     LOGGER.info("Log file: %s", log_file)
 
-    if not config.raw_dir.exists():
+    if not config.query_only and not config.raw_dir.exists():
         raise FileNotFoundError(f"raw_dir does not exist: {config.raw_dir}")
-    files = _scan_files(config.raw_dir, config.extensions, config.recursive)
+    files = [] if config.query_only else _scan_files(config.raw_dir, config.extensions, config.recursive)
     if config.max_files is not None:
         files = files[: max(0, int(config.max_files))]
+    _log_settings(config, files)
 
     summary_base = {
         "workspace": config.workspace,
@@ -567,6 +808,15 @@ def main(argv: list[str] | None = None) -> int:
         "files": [path.as_posix() for path in files],
         "max_parallel_insert": config.max_parallel_insert,
         "dry_run": config.dry_run,
+        "query_only": config.query_only,
+        "query": config.query,
+        "query_file": config.query_file.as_posix() if config.query_file else None,
+        "query_mode": config.query_mode,
+        "top_k": config.top_k,
+        "chunk_top_k": config.chunk_top_k,
+        "enable_build_rerank": config.enable_build_rerank,
+        "enable_query_rerank": config.enable_query_rerank,
+        "settings": _settings_summary(config, files),
     }
 
     if config.dry_run:
@@ -574,13 +824,25 @@ def main(argv: list[str] | None = None) -> int:
         LOGGER.info("Dry run complete: %d files", len(files))
         return 0
 
-    result = asyncio.run(_run_build(config, files))
+    result: dict[str, Any] = {}
+    exit_code = 0
+    if not config.query_only:
+        result = asyncio.run(_run_build(config, files))
+        exit_code = 1 if result.get("failed_enqueue_count") else 0
+    if config.query:
+        query_result = asyncio.run(_run_query(config, config.query))
+        result["query_result"] = query_result
+        _write_json(config.report_dir / "query_response.json", query_result)
+        print(query_result["response"])
+    elif config.query_only:
+        raise ValueError("--query-only requires --query or --query-file.")
+
     summary = {**summary_base, **result}
     _write_json(config.report_dir / "build_summary.json", summary)
     _write_json(config.report_dir / "failed_files.json", result.get("failures", []))
     _write_json(config.report_dir / "documents_status.json", result.get("documents", {}))
     LOGGER.info("Build finished. Summary: %s", config.report_dir / "build_summary.json")
-    return 1 if result.get("failed_enqueue_count") else 0
+    return exit_code
 
 
 if __name__ == "__main__":
