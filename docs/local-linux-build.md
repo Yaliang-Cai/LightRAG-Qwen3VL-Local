@@ -194,15 +194,16 @@ This local profile sets:
 - `EMBEDDING_FUNC_MAX_ASYNC=4`
 - `EMBEDDING_BATCH_NUM=4`
 - `MAX_ASYNC_RERANK=1`
-- `VLM_MAX_ASYNC_LLM=1`
+- `VLM_MAX_ASYNC_LLM=2`
 - `MAX_PARALLEL_PARSE_NATIVE=2`
 - `MAX_PARALLEL_PARSE_MINERU=1`
 - `MAX_PARALLEL_PARSE_DOCLING=1`
-- `MAX_PARALLEL_ANALYZE=1`
+- `MAX_PARALLEL_ANALYZE=2`
 
-For local Qwen3-VL, keep MinerU/Docling parse and multimodal analyze at `1`
-until you have measured GPU memory. Native text parse can stay at `2` because
-it is much lighter.
+For local Qwen3-VL, keep MinerU/Docling parse at `1` until you have measured
+CPU/GPU memory. Multimodal analyze and VLM calls default to `2`; reduce both to
+`1` if vLLM memory or latency becomes unstable. Native text parse can stay at
+`2` because it is much lighter.
 
 ## Multimodal Token Guard
 

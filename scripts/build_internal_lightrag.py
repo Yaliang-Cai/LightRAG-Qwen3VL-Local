@@ -280,12 +280,12 @@ def _apply_runtime_env(config: BuildConfig) -> None:
         "MAX_PARALLEL_PARSE_NATIVE": "2",
         "MAX_PARALLEL_PARSE_MINERU": "1",
         "MAX_PARALLEL_PARSE_DOCLING": "1",
-        "MAX_PARALLEL_ANALYZE": "1",
+        "MAX_PARALLEL_ANALYZE": "2",
         "MAX_EXTRACT_INPUT_TOKENS": "20480",
         "EMBEDDING_TOKEN_LIMIT": "8192",
         "RERANK_BY_DEFAULT": "true",
         "VLM_PROCESS_ENABLE": "true",
-        "VLM_MAX_ASYNC_LLM": "1",
+        "VLM_MAX_ASYNC_LLM": "2",
     }
     for key, value in defaults.items():
         os.environ.setdefault(key, value)
@@ -622,7 +622,7 @@ def _make_rag(config: BuildConfig, include_reranker: bool) -> Any:
         role_llm_configs={
             "vlm": RoleLLMConfig(
                 func=llm_func,
-                max_async=_env_int("VLM_MAX_ASYNC_LLM", 1),
+                max_async=_env_int("VLM_MAX_ASYNC_LLM", 2),
                 timeout=_env_int("LLM_TIMEOUT", 1800),
                 metadata={
                     "binding": "openai",

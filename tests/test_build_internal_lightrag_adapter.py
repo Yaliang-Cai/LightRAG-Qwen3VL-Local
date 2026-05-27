@@ -79,13 +79,13 @@ def test_runtime_env_defaults_match_local_concurrency(monkeypatch, tmp_path):
     assert adapter.os.environ["MAX_PARALLEL_PARSE_NATIVE"] == "2"
     assert adapter.os.environ["MAX_PARALLEL_PARSE_MINERU"] == "1"
     assert adapter.os.environ["MAX_PARALLEL_PARSE_DOCLING"] == "1"
-    assert adapter.os.environ["MAX_PARALLEL_ANALYZE"] == "1"
+    assert adapter.os.environ["MAX_PARALLEL_ANALYZE"] == "2"
     assert adapter.os.environ["EMBEDDING_BATCH_NUM"] == "4"
     assert adapter.os.environ["RAGANYTHING_EMBEDDING_BATCH_NUM"] == "4"
     assert adapter.os.environ["MAX_EXTRACT_INPUT_TOKENS"] == "20480"
     assert adapter.os.environ["EMBEDDING_TOKEN_LIMIT"] == "8192"
     assert adapter.os.environ["RERANK_BY_DEFAULT"] == "true"
-    assert adapter.os.environ["VLM_MAX_ASYNC_LLM"] == "1"
+    assert adapter.os.environ["VLM_MAX_ASYNC_LLM"] == "2"
 
 
 def test_resolve_query_text_accepts_inline_or_file(tmp_path):
