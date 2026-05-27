@@ -117,9 +117,21 @@ Reports are written under:
 Important report files:
 
 - `build_internal_lightrag.log`
+- `summary.json`: compact RAG_LUND-style run summary with success/failure
+  counts, status counts, failed files, and selected document statuses.
 - `build_summary.json`
 - `failed_files.json`
 - `documents_status.json`
+
+The script stages files into `INPUT_DIR/<workspace>/` with stable hashed names.
+Before enqueueing, it checks LightRAG `doc_status` by that staged basename. If a
+document already exists, it is not enqueued again; the script still calls
+`apipeline_process_enqueue_documents()` so official LightRAG can resume
+`pending`, `parsing`, `analyzing`, `processing`, and `failed` records. Fully
+processed documents are therefore skipped on rerun. Failed documents are retried
+by the official pipeline. MinerU is not rerun for processed documents; a failed
+document may invoke MinerU again if the previous failure happened before parse
+artifacts/full document content were completed or those artifacts are missing.
 
 ## Query Smoke Test
 

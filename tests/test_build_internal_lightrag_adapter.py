@@ -88,6 +88,72 @@ def test_runtime_env_defaults_match_local_concurrency(monkeypatch, tmp_path):
     assert adapter.os.environ["VLM_MAX_ASYNC_LLM"] == "2"
 
 
+def test_compact_summary_counts_processed_failed_and_enqueue_errors(tmp_path):
+    adapter = load_adapter()
+    base = {
+        "workspace": "ws",
+        "raw_dir": str(tmp_path / "raw"),
+        "working_dir": str(tmp_path / "work"),
+        "input_dir": str(tmp_path / "inputs"),
+        "report_dir": str(tmp_path / "reports"),
+        "file_count": 3,
+        "files": ["good.pdf", "bad.pdf", "enqueue.docx"],
+        "settings": {"env": {"MAX_PARALLEL_INSERT": "2"}},
+    }
+    result = {
+        "elapsed_seconds": 12.5,
+        "enqueued_count": 2,
+        "skipped_existing_count": 1,
+        "failed_enqueue_count": 1,
+        "failures": [{"source": "enqueue.docx", "error": "cannot stage"}],
+        "documents": {
+            "documents": [
+                {
+                    "doc_id": "doc-good",
+                    "payload": {
+                        "file_path": "good.pdf",
+                        "status": "processed",
+                        "track_id": "track-a",
+                    },
+                },
+                {
+                    "doc_id": "doc-bad",
+                    "payload": {
+                        "file_path": "bad.pdf",
+                        "status": "failed",
+                        "error_msg": "VLM prompt too long",
+                    },
+                },
+            ]
+        },
+    }
+
+    summary = adapter._build_compact_summary(base, result)
+
+    assert summary["succeeded_count"] == 1
+    assert summary["failed_count"] == 2
+    assert summary["status_counts"] == {"failed": 1, "processed": 1}
+    assert summary["failed_files"][0]["file"] == "enqueue.docx"
+    assert summary["failed_files"][1]["file"] == "bad.pdf"
+
+
+def test_existing_processed_or_failed_sources_are_not_enqueued_again(tmp_path):
+    adapter = load_adapter()
+
+    known = {
+        "already.pdf": {"status": "processed", "doc_id": "doc-1"},
+        "retry.pdf": {"status": "failed", "doc_id": "doc-2"},
+    }
+
+    assert adapter._existing_doc_record_for_source(tmp_path / "already.pdf", known)[
+        "status"
+    ] == "processed"
+    assert adapter._existing_doc_record_for_source(tmp_path / "retry.pdf", known)[
+        "status"
+    ] == "failed"
+    assert adapter._existing_doc_record_for_source(tmp_path / "new.pdf", known) is None
+
+
 def test_resolve_query_text_accepts_inline_or_file(tmp_path):
     adapter = load_adapter()
 

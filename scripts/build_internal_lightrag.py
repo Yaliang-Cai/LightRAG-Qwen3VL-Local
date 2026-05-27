@@ -199,6 +199,155 @@ def _write_json(path: Path, payload: Any) -> None:
     )
 
 
+def _doc_payload_dict(payload: Any) -> dict[str, Any]:
+    if payload is None:
+        return {}
+    if isinstance(payload, dict):
+        data = dict(payload)
+    elif hasattr(payload, "__dict__"):
+        data = dict(payload.__dict__)
+    else:
+        data = {}
+    status = data.get("status")
+    if hasattr(status, "value"):
+        data["status"] = status.value
+    elif status is not None:
+        data["status"] = str(status)
+    return data
+
+
+def _doc_status_name(payload: dict[str, Any]) -> str:
+    status = payload.get("status", "")
+    if hasattr(status, "value"):
+        return str(status.value)
+    return str(status or "").lower()
+
+
+def _existing_doc_record_for_source(
+    source: Path, existing_by_file: dict[str, dict[str, Any]]
+) -> dict[str, Any] | None:
+    return existing_by_file.get(source.name)
+
+
+async def _collect_existing_doc_index(rag: Any) -> dict[str, dict[str, Any]]:
+    doc_status = getattr(rag, "doc_status", None)
+    if doc_status is None:
+        return {}
+    rows: dict[str, Any] = {}
+    getter = getattr(doc_status, "get_docs_by_statuses", None)
+    if callable(getter):
+        from lightrag.base import DocStatus
+
+        rows = await getter(list(DocStatus))
+    else:
+        paginated = getattr(doc_status, "get_docs_paginated", None)
+        if callable(paginated):
+            page_rows, _ = await paginated(
+                page=1,
+                page_size=_env_int("DOC_STATUS_SCAN_PAGE_SIZE", 10000),
+                sort_field="updated_at",
+                sort_direction="desc",
+            )
+            for row in page_rows:
+                if isinstance(row, tuple) and len(row) == 2:
+                    rows[str(row[0])] = row[1]
+                else:
+                    rows[str(getattr(row, "id", ""))] = row
+
+    existing: dict[str, dict[str, Any]] = {}
+    for doc_id, payload in rows.items():
+        data = _doc_payload_dict(payload)
+        file_path = str(data.get("file_path") or "").strip()
+        if not file_path:
+            continue
+        data["doc_id"] = str(doc_id)
+        existing[Path(file_path).name] = data
+    return existing
+
+
+def _build_compact_summary(
+    summary_base: dict[str, Any], result: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    result = result or {}
+    documents = list(result.get("documents", {}).get("documents", []))
+
+    relevant_files: set[str] = set()
+    for record in result.get("enqueued", []):
+        staged = record.get("staged")
+        if staged:
+            relevant_files.add(Path(str(staged)).name)
+    for record in result.get("skipped_existing", []):
+        file_path = record.get("file_path") or record.get("staged")
+        if file_path:
+            relevant_files.add(Path(str(file_path)).name)
+
+    selected_docs: list[dict[str, Any]] = []
+    status_counts: dict[str, int] = {}
+    failed_files: list[dict[str, Any]] = []
+    for failure in result.get("failures", []):
+        failed_files.append(
+            {
+                "file": failure.get("source", "unknown"),
+                "stage": "enqueue",
+                "error": failure.get("error", ""),
+            }
+        )
+
+    for doc in documents:
+        payload = _doc_payload_dict(doc.get("payload", {}))
+        file_path = str(payload.get("file_path") or "")
+        if relevant_files and Path(file_path).name not in relevant_files:
+            continue
+        status = _doc_status_name(payload)
+        status_counts[status] = status_counts.get(status, 0) + 1
+        selected_docs.append(
+            {
+                "doc_id": str(doc.get("doc_id", "")),
+                "file_path": file_path,
+                "status": status,
+                "track_id": payload.get("track_id"),
+                "chunks_count": payload.get("chunks_count"),
+                "error_msg": payload.get("error_msg"),
+                "metadata": payload.get("metadata"),
+            }
+        )
+        if status == "failed":
+            failed_files.append(
+                {
+                    "file": file_path or str(doc.get("doc_id", "")),
+                    "doc_id": str(doc.get("doc_id", "")),
+                    "stage": "pipeline",
+                    "error": payload.get("error_msg") or "",
+                }
+            )
+
+    succeeded_count = status_counts.get("processed", 0)
+    failed_count = len(failed_files)
+    in_progress_count = sum(
+        status_counts.get(status, 0)
+        for status in ("pending", "parsing", "analyzing", "processing", "preprocessed")
+    )
+    return {
+        "workspace": summary_base.get("workspace"),
+        "raw_dir": summary_base.get("raw_dir"),
+        "working_dir": summary_base.get("working_dir"),
+        "input_dir": summary_base.get("input_dir"),
+        "report_dir": summary_base.get("report_dir"),
+        "file_count": summary_base.get("file_count", 0),
+        "elapsed_seconds": result.get("elapsed_seconds"),
+        "succeeded_count": succeeded_count,
+        "failed_count": failed_count,
+        "in_progress_count": in_progress_count,
+        "enqueued_count": result.get("enqueued_count", 0),
+        "skipped_existing_count": result.get("skipped_existing_count", 0),
+        "failed_enqueue_count": result.get("failed_enqueue_count", 0),
+        "status_counts": dict(sorted(status_counts.items())),
+        "failed_files": failed_files,
+        "documents": selected_docs,
+        "settings": summary_base.get("settings", {}),
+    }
+
+
 def _resolve_query_text(args: argparse.Namespace) -> str | None:
     if args.query and args.query_file:
         raise ValueError("Use only one of --query or --query-file.")
@@ -515,7 +664,9 @@ def _make_rerank_func():
     return rerank
 
 
-async def _enqueue_file(rag: Any, source: Path, config: BuildConfig, track_id: str) -> dict[str, Any]:
+async def _enqueue_staged_file(
+    rag: Any, source: Path, staged: Path, config: BuildConfig, track_id: str
+) -> dict[str, Any]:
     from lightrag.constants import (
         FULL_DOCS_FORMAT_PENDING_PARSE,
         PARSER_ENGINE_LEGACY,
@@ -523,7 +674,6 @@ async def _enqueue_file(rag: Any, source: Path, config: BuildConfig, track_id: s
     )
     from lightrag.parser.routing import resolve_file_parser_directives
 
-    staged = _stage_file(source, config.input_dir, config.workspace)
     engine, process_options = resolve_file_parser_directives(staged)
     process_options = process_options or PROCESS_OPTION_CHUNK_FIXED
     started = time.time()
@@ -560,6 +710,11 @@ async def _enqueue_file(rag: Any, source: Path, config: BuildConfig, track_id: s
     }
 
 
+async def _enqueue_file(rag: Any, source: Path, config: BuildConfig, track_id: str) -> dict[str, Any]:
+    staged = _stage_file(source, config.input_dir, config.workspace)
+    return await _enqueue_staged_file(rag, source, staged, config, track_id)
+
+
 async def _collect_doc_status(rag: Any) -> dict[str, Any]:
     doc_status = getattr(rag, "doc_status", None)
     if doc_status is None:
@@ -575,8 +730,7 @@ async def _collect_doc_status(rag: Any) -> dict[str, Any]:
         else:
             payload = row
             doc_id = getattr(payload, "id", "")
-        if hasattr(payload, "__dict__"):
-            payload = dict(payload.__dict__)
+        payload = _doc_payload_dict(payload)
         documents.append({"doc_id": str(doc_id), "payload": payload})
     return {"count": len(documents), "total": total, "documents": documents}
 
@@ -641,13 +795,41 @@ async def _run_build(config: BuildConfig, files: list[Path]) -> dict[str, Any]:
     rag = _make_rag(config, include_reranker=config.enable_build_rerank)
 
     enqueued: list[dict[str, Any]] = []
+    skipped_existing: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     start = time.time()
     try:
         LOGGER.info("Initializing LightRAG storages.")
         await rag.initialize_storages()
+        existing_by_file = await _collect_existing_doc_index(rag)
+        LOGGER.info(
+            "Existing doc_status records indexed by file_path: %d",
+            len(existing_by_file),
+        )
         for index, source in enumerate(files, start=1):
             try:
+                staged = _stage_file(source, config.input_dir, config.workspace)
+                existing = _existing_doc_record_for_source(staged, existing_by_file)
+                if existing is not None:
+                    record = {
+                        "source": source.as_posix(),
+                        "staged": staged.as_posix(),
+                        "file_path": staged.name,
+                        "doc_id": existing.get("doc_id", ""),
+                        "status": _doc_status_name(existing),
+                        "error_msg": existing.get("error_msg"),
+                    }
+                    skipped_existing.append(record)
+                    LOGGER.info(
+                        "Skip enqueue [%d/%d]: %s already exists as %s status=%s; "
+                        "pipeline resume will handle failed/pending states.",
+                        index,
+                        len(files),
+                        source.name,
+                        record["doc_id"],
+                        record["status"],
+                    )
+                    continue
                 LOGGER.info(
                     "Enqueue start [%d/%d]: %s size=%d bytes",
                     index,
@@ -655,7 +837,7 @@ async def _run_build(config: BuildConfig, files: list[Path]) -> dict[str, Any]:
                     source,
                     source.stat().st_size,
                 )
-                record = await _enqueue_file(rag, source, config, track_id)
+                record = await _enqueue_staged_file(rag, source, staged, config, track_id)
                 enqueued.append(record)
                 LOGGER.info(
                     "Enqueue done [%d/%d]: %s parser=%s options=%s staged=%s seconds=%.2f",
@@ -672,10 +854,13 @@ async def _run_build(config: BuildConfig, files: list[Path]) -> dict[str, Any]:
                 failures.append({"source": source.as_posix(), "error": str(exc)})
         if enqueued:
             LOGGER.info("Processing enqueue queue: %d document(s).", len(enqueued))
-            await rag.apipeline_process_enqueue_documents()
-            LOGGER.info("Processing queue finished.")
         else:
-            LOGGER.warning("No documents were enqueued; skipping process queue.")
+            LOGGER.warning(
+                "No new documents were enqueued; processing queue anyway to resume "
+                "existing pending/failed documents."
+            )
+        await rag.apipeline_process_enqueue_documents()
+        LOGGER.info("Processing queue finished.")
         LOGGER.info("Collecting document status.")
         documents = await _collect_doc_status(rag)
     finally:
@@ -686,8 +871,10 @@ async def _run_build(config: BuildConfig, files: list[Path]) -> dict[str, Any]:
         "track_id": track_id,
         "elapsed_seconds": time.time() - start,
         "enqueued_count": len(enqueued),
+        "skipped_existing_count": len(skipped_existing),
         "failed_enqueue_count": len(failures),
         "enqueued": enqueued,
+        "skipped_existing": skipped_existing,
         "failures": failures,
         "documents": documents,
     }
@@ -821,6 +1008,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if config.dry_run:
         _write_json(config.report_dir / "build_summary.json", summary_base)
+        _write_json(config.report_dir / "summary.json", _build_compact_summary(summary_base))
         LOGGER.info("Dry run complete: %d files", len(files))
         return 0
 
@@ -828,7 +1016,6 @@ def main(argv: list[str] | None = None) -> int:
     exit_code = 0
     if not config.query_only:
         result = asyncio.run(_run_build(config, files))
-        exit_code = 1 if result.get("failed_enqueue_count") else 0
     if config.query:
         query_result = asyncio.run(_run_query(config, config.query))
         result["query_result"] = query_result
@@ -838,10 +1025,14 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--query-only requires --query or --query-file.")
 
     summary = {**summary_base, **result}
+    compact_summary = _build_compact_summary(summary_base, result)
+    if not config.query_only:
+        exit_code = 1 if compact_summary.get("failed_count") else 0
     _write_json(config.report_dir / "build_summary.json", summary)
-    _write_json(config.report_dir / "failed_files.json", result.get("failures", []))
+    _write_json(config.report_dir / "summary.json", compact_summary)
+    _write_json(config.report_dir / "failed_files.json", compact_summary.get("failed_files", []))
     _write_json(config.report_dir / "documents_status.json", result.get("documents", {}))
-    LOGGER.info("Build finished. Summary: %s", config.report_dir / "build_summary.json")
+    LOGGER.info("Build finished. Summary: %s", config.report_dir / "summary.json")
     return exit_code
 
 
