@@ -25,6 +25,7 @@ DEFAULT_EMBEDDING_MODEL = "/data/h50056787/models/bge-m3"
 DEFAULT_RERANK_MODEL = "/data/h50056787/models/bge-reranker-v2-m3"
 DEFAULT_MAX_ASYNC = 16
 DEFAULT_EMBEDDING_BATCH_NUM = 4
+LOCAL_HYBRID_VECTOR_STORAGE = "QdrantHybridBM25VectorDBStorage"
 DEFAULT_EXTENSIONS = (
     ".pdf,.jpg,.jpeg,.png,.bmp,.tiff,.tif,.gif,.webp,"
     ".doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md"
@@ -409,7 +410,11 @@ def _apply_runtime_env(config: BuildConfig) -> None:
         "LIGHTRAG_KV_STORAGE": "JsonKVStorage",
         "LIGHTRAG_DOC_STATUS_STORAGE": "JsonDocStatusStorage",
         "LIGHTRAG_GRAPH_STORAGE": "Neo4JStorage",
-        "LIGHTRAG_VECTOR_STORAGE": "QdrantVectorDBStorage",
+        "LIGHTRAG_VECTOR_STORAGE": LOCAL_HYBRID_VECTOR_STORAGE,
+        "QDRANT_ENABLE_SPARSE_BM25": "true",
+        "QDRANT_SPARSE_BM25_MODEL": "Qdrant/bm25",
+        "QDRANT_RETRIEVAL_MODE": "hybrid",
+        "QDRANT_COLLECTION_PREFIX": "local_lightrag_bm25",
         "MAX_PARALLEL_INSERT": str(config.max_parallel_insert),
         "MAX_SOURCE_IDS_PER_ENTITY": "99999",
         "MAX_SOURCE_IDS_PER_RELATION": "99999",
@@ -470,9 +475,15 @@ def _settings_summary(config: BuildConfig, files: list[Path] | None = None) -> d
         "SOURCE_IDS_LIMIT_METHOD",
         "RERANK_BY_DEFAULT",
         "LIGHTRAG_PARSER",
+        "LIGHTRAG_VECTOR_STORAGE",
         "NEO4J_URI",
         "NEO4J_DATABASE",
         "QDRANT_URL",
+        "QDRANT_ENABLE_SPARSE_BM25",
+        "QDRANT_SPARSE_BM25_MODEL",
+        "QDRANT_RETRIEVAL_MODE",
+        "QDRANT_COLLECTION_PREFIX",
+        "QDRANT_FASTEMBED_CACHE_DIR",
     )
     return {
         "workspace": config.workspace,
@@ -530,6 +541,13 @@ def _log_settings(config: BuildConfig, files: list[Path] | None = None) -> None:
         summary["enable_query_rerank"],
         summary["env"].get("RERANK_BY_DEFAULT"),
         summary["env"].get("MAX_ASYNC_RERANK"),
+    )
+    LOGGER.info(
+        "Qdrant vector storage: %s retrieval_mode=%s sparse_bm25=%s collection_prefix=%s",
+        summary["env"].get("LIGHTRAG_VECTOR_STORAGE"),
+        summary["env"].get("QDRANT_RETRIEVAL_MODE"),
+        summary["env"].get("QDRANT_ENABLE_SPARSE_BM25"),
+        summary["env"].get("QDRANT_COLLECTION_PREFIX"),
     )
     LOGGER.info(
         "Token/source caps: max_extract=%s max_source_entity=%s max_source_relation=%s",
@@ -736,6 +754,7 @@ async def _collect_doc_status(rag: Any) -> dict[str, Any]:
 
 
 def _make_rag(config: BuildConfig, include_reranker: bool) -> Any:
+    _register_local_hybrid_bm25_storage()
     from lightrag import LightRAG
     from lightrag.llm_roles import RoleLLMConfig
 
@@ -771,7 +790,7 @@ def _make_rag(config: BuildConfig, include_reranker: bool) -> Any:
         kv_storage=os.getenv("LIGHTRAG_KV_STORAGE", "JsonKVStorage"),
         doc_status_storage=os.getenv("LIGHTRAG_DOC_STATUS_STORAGE", "JsonDocStatusStorage"),
         graph_storage=os.getenv("LIGHTRAG_GRAPH_STORAGE", "Neo4JStorage"),
-        vector_storage=os.getenv("LIGHTRAG_VECTOR_STORAGE", "QdrantVectorDBStorage"),
+        vector_storage=os.getenv("LIGHTRAG_VECTOR_STORAGE", LOCAL_HYBRID_VECTOR_STORAGE),
         vlm_process_enable=os.getenv("VLM_PROCESS_ENABLE", "true").lower() in {"1", "true", "yes", "on"},
         role_llm_configs={
             "vlm": RoleLLMConfig(
@@ -786,6 +805,16 @@ def _make_rag(config: BuildConfig, include_reranker: bool) -> Any:
             )
         },
     )
+
+
+def _register_local_hybrid_bm25_storage() -> None:
+    from lightrag import kg
+
+    implementations = kg.STORAGE_IMPLEMENTATIONS["VECTOR_STORAGE"]["implementations"]
+    if LOCAL_HYBRID_VECTOR_STORAGE not in implementations:
+        implementations.append(LOCAL_HYBRID_VECTOR_STORAGE)
+    kg.STORAGE_ENV_REQUIREMENTS[LOCAL_HYBRID_VECTOR_STORAGE] = ["QDRANT_URL"]
+    kg.STORAGES[LOCAL_HYBRID_VECTOR_STORAGE] = "local_lightrag.qdrant_hybrid_bm25"
 
 
 async def _run_build(config: BuildConfig, files: list[Path]) -> dict[str, Any]:

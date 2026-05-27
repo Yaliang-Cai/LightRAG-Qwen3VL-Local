@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 from pathlib import Path
@@ -47,6 +48,11 @@ def test_runtime_env_defaults_match_local_concurrency(monkeypatch, tmp_path):
         "EMBEDDING_TOKEN_LIMIT",
         "RERANK_BY_DEFAULT",
         "VLM_MAX_ASYNC_LLM",
+        "LIGHTRAG_VECTOR_STORAGE",
+        "QDRANT_ENABLE_SPARSE_BM25",
+        "QDRANT_SPARSE_BM25_MODEL",
+        "QDRANT_RETRIEVAL_MODE",
+        "QDRANT_COLLECTION_PREFIX",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -86,6 +92,108 @@ def test_runtime_env_defaults_match_local_concurrency(monkeypatch, tmp_path):
     assert adapter.os.environ["EMBEDDING_TOKEN_LIMIT"] == "8192"
     assert adapter.os.environ["RERANK_BY_DEFAULT"] == "true"
     assert adapter.os.environ["VLM_MAX_ASYNC_LLM"] == "2"
+    assert adapter.os.environ["LIGHTRAG_VECTOR_STORAGE"] == "QdrantHybridBM25VectorDBStorage"
+    assert adapter.os.environ["QDRANT_ENABLE_SPARSE_BM25"] == "true"
+    assert adapter.os.environ["QDRANT_SPARSE_BM25_MODEL"] == "Qdrant/bm25"
+    assert adapter.os.environ["QDRANT_RETRIEVAL_MODE"] == "hybrid"
+    assert adapter.os.environ["QDRANT_COLLECTION_PREFIX"] == "local_lightrag_bm25"
+
+
+def test_register_local_hybrid_bm25_storage(monkeypatch):
+    adapter = load_adapter()
+    from lightrag import kg
+
+    kg.STORAGES.pop("QdrantHybridBM25VectorDBStorage", None)
+    kg.STORAGE_IMPLEMENTATIONS["VECTOR_STORAGE"]["implementations"] = [
+        item
+        for item in kg.STORAGE_IMPLEMENTATIONS["VECTOR_STORAGE"]["implementations"]
+        if item != "QdrantHybridBM25VectorDBStorage"
+    ]
+    kg.STORAGE_ENV_REQUIREMENTS.pop("QdrantHybridBM25VectorDBStorage", None)
+
+    adapter._register_local_hybrid_bm25_storage()
+
+    assert (
+        kg.STORAGES["QdrantHybridBM25VectorDBStorage"]
+        == "local_lightrag.qdrant_hybrid_bm25"
+    )
+    assert (
+        "QdrantHybridBM25VectorDBStorage"
+        in kg.STORAGE_IMPLEMENTATIONS["VECTOR_STORAGE"]["implementations"]
+    )
+    assert kg.STORAGE_ENV_REQUIREMENTS["QdrantHybridBM25VectorDBStorage"] == [
+        "QDRANT_URL"
+    ]
+
+
+def test_hybrid_bm25_collection_name_includes_prefix_and_workspace(monkeypatch):
+    from lightrag.utils import EmbeddingFunc
+    from local_lightrag.qdrant_hybrid_bm25 import QdrantHybridBM25VectorDBStorage
+
+    monkeypatch.setenv("QDRANT_COLLECTION_PREFIX", "local_lightrag_bm25")
+    monkeypatch.setenv("QDRANT_ENABLE_SPARSE_BM25", "true")
+    monkeypatch.setenv("QDRANT_RETRIEVAL_MODE", "hybrid")
+
+    async def embed(texts, **kwargs):
+        return [[0.0] * 4 for _ in texts]
+
+    storage = QdrantHybridBM25VectorDBStorage(
+        namespace="chunks",
+        workspace="internal_lightrag",
+        global_config={
+            "embedding_batch_num": 4,
+            "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.2},
+        },
+        embedding_func=EmbeddingFunc(
+            embedding_dim=4,
+            max_token_size=128,
+            func=embed,
+            model_name="bge-m3",
+        ),
+        meta_fields={"content"},
+    )
+
+    assert storage.final_namespace == "local_lightrag_bm25_internal_lightrag_vdb_chunks_bge_m3_4d"
+    assert storage.retrieval_mode == "hybrid"
+    assert storage.enable_sparse_bm25 is True
+
+
+def test_hybrid_bm25_get_vectors_by_ids_returns_dense_vector(monkeypatch):
+    from lightrag.utils import EmbeddingFunc
+    from local_lightrag.qdrant_hybrid_bm25 import QdrantHybridBM25VectorDBStorage
+
+    async def embed(texts, **kwargs):
+        return [[0.0] * 4 for _ in texts]
+
+    storage = QdrantHybridBM25VectorDBStorage(
+        namespace="chunks",
+        workspace="internal_lightrag",
+        global_config={
+            "embedding_batch_num": 4,
+            "vector_db_storage_cls_kwargs": {"cosine_better_than_threshold": 0.2},
+        },
+        embedding_func=EmbeddingFunc(
+            embedding_dim=4,
+            max_token_size=128,
+            func=embed,
+            model_name="bge-m3",
+        ),
+        meta_fields={"content"},
+    )
+
+    class Point:
+        payload = {"id": "chunk-1"}
+        vector = {"dense": [0.1, 0.2, 0.3, 0.4], "bm25": object()}
+
+    class Client:
+        def retrieve(self, **kwargs):
+            return [Point()]
+
+    storage._client = Client()
+
+    vectors = asyncio.run(storage.get_vectors_by_ids(["chunk-1"]))
+
+    assert vectors == {"chunk-1": [0.1, 0.2, 0.3, 0.4]}
 
 
 def test_compact_summary_counts_processed_failed_and_enqueue_errors(tmp_path):

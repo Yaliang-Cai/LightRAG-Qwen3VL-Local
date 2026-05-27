@@ -10,7 +10,7 @@ and this document.
 - LLM/VLM model: `Qwen/Qwen3-VL-30B-A3B-Instruct-FP8`
 - Embedding model loaded in-process: `/data/h50056787/models/bge-m3`
 - Reranker loaded in-process: `/data/h50056787/models/bge-reranker-v2-m3`
-- Neo4j graph storage and Qdrant vector storage
+- Neo4j graph storage and local Qdrant dense+BM25 vector storage
 - `MAX_SOURCE_IDS_PER_ENTITY=99999`
 - `MAX_SOURCE_IDS_PER_RELATION=99999`
 - Conservative document pipeline concurrency: `MAX_PARALLEL_INSERT=2`
@@ -31,9 +31,14 @@ custom source changes:
 - synonym edges
 - strict relation endpoint matching
 - custom prompt modifications
-- Qdrant dense+sparse BM25 hybrid collections
+- RAG_LUND's full retrieval router, PPR profile, and evaluation-only hybrid
+  profiles
 
-Official Qdrant storage in this repository is dense-vector only.
+Official LightRAG's built-in Qdrant storage is dense-vector only. This
+repository keeps official `lightrag/` source unchanged and adds a local adapter
+named `QdrantHybridBM25VectorDBStorage` under `local_lightrag/` for the build
+script. The adapter writes dense vectors plus Qdrant BM25 sparse vectors and
+queries them with RRF fusion by default.
 
 ## Install
 
@@ -43,7 +48,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
 pip install -e ".[api]"
-pip install sentence-transformers
+pip install sentence-transformers fastembed
 cp configs/local-qwen3vl.env.example configs/local-qwen3vl.env
 ```
 
@@ -62,6 +67,21 @@ by `configs/local-qwen3vl.env` are:
 export NEO4J_URI=bolt://localhost:7687
 export QDRANT_URL=http://localhost:6333
 ```
+
+The local hybrid adapter uses separate Qdrant collection names from both the
+official dense-only profile and RAG_LUND. With the default workspace, collection
+names are shaped like:
+
+```text
+local_lightrag_bm25_internal_lightrag_vdb_chunks_bge_m3_1024d
+local_lightrag_bm25_internal_lightrag_vdb_entities_bge_m3_1024d
+local_lightrag_bm25_internal_lightrag_vdb_relationships_bge_m3_1024d
+```
+
+Payloads still include `workspace_id=internal_lightrag`. Neo4j remains isolated
+by the `:internal_lightrag` label. Do not set `QDRANT_WORKSPACE` or
+`NEO4J_WORKSPACE` to a RAG_LUND workspace such as `internal` unless you
+intentionally want to share logical workspace ids.
 
 Start Qwen3-VL with the same OpenAI-compatible endpoint used by RAG_LUND:
 
@@ -175,11 +195,19 @@ CLI:
 - `CHUNK_TOP_K` / `--chunk-top-k`
 - `MAX_ENTITY_TOKENS`, `MAX_RELATION_TOKENS`, `MAX_TOTAL_TOKENS`
 
+The local Qdrant adapter indexes both dense and BM25 sparse vectors. Query mode
+is controlled by `QDRANT_RETRIEVAL_MODE`:
+
+- `hybrid`: dense and BM25 prefetch, fused by Qdrant RRF. This is the default.
+- `dense`: dense vector search only.
+- `bm25`: sparse lexical search only.
+
 Official LightRAG reranks retrieved candidates, not the whole database. For
 vector chunks, `_get_vector_context` first queries Qdrant with
-`search_top_k = chunk_top_k or top_k`. Then `process_chunks_unified` sends that
-deduplicated candidate list to the reranker with `top_n = chunk_top_k or
-len(unique_chunks)`.
+`search_top_k = chunk_top_k or top_k`. The local adapter applies
+`QDRANT_RETRIEVAL_MODE` inside that Qdrant query. Then
+`process_chunks_unified` sends the deduplicated candidate list to the reranker
+with `top_n = chunk_top_k or len(unique_chunks)`.
 
 ## Official LightRAG Concurrency
 
