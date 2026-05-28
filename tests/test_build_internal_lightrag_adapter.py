@@ -116,12 +116,49 @@ def test_runtime_env_defaults_match_local_concurrency(monkeypatch, tmp_path):
     assert adapter.os.environ["RERANK_BY_DEFAULT"] == "true"
     assert adapter.os.environ["VLM_MAX_ASYNC_LLM"] == "2"
     assert adapter.os.environ["LIGHTRAG_VECTOR_STORAGE"] == "QdrantHybridBM25VectorDBStorage"
-    assert "*.docx:mineru-iteP" in adapter.os.environ["LIGHTRAG_PARSER"]
-    assert "*.txt:legacy-F" in adapter.os.environ["LIGHTRAG_PARSER"]
+    assert "docx:mineru-iteP" in adapter.os.environ["LIGHTRAG_PARSER"]
+    assert "txt:legacy-F" in adapter.os.environ["LIGHTRAG_PARSER"]
+    assert "*.docx" not in adapter.os.environ["LIGHTRAG_PARSER"]
     assert adapter.os.environ["QDRANT_ENABLE_SPARSE_BM25"] == "true"
     assert adapter.os.environ["QDRANT_SPARSE_BM25_MODEL"] == "Qdrant/bm25"
     assert adapter.os.environ["QDRANT_RETRIEVAL_MODE"] == "hybrid"
     assert adapter.os.environ["QDRANT_COLLECTION_PREFIX"] == "local_lightrag_bm25"
+
+
+def test_default_parser_routes_rich_files_to_mineru(monkeypatch, tmp_path):
+    adapter = load_adapter()
+    monkeypatch.delenv("LIGHTRAG_PARSER", raising=False)
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
+
+    config = adapter.BuildConfig(
+        raw_dir=tmp_path / "raw",
+        storage_root=tmp_path / "storage",
+        working_dir=tmp_path / "working",
+        input_dir=tmp_path / "inputs",
+        report_dir=tmp_path / "reports",
+        workspace="test_workspace",
+        max_files=None,
+        max_parallel_insert=2,
+        recursive=True,
+        extensions=(".pdf",),
+        dry_run=True,
+        enable_build_rerank=False,
+        enable_query_rerank=True,
+        query=None,
+        query_file=None,
+        query_only=False,
+        query_mode="mix",
+        top_k=None,
+        chunk_top_k=None,
+    )
+
+    adapter._apply_runtime_env(config)
+
+    from lightrag.parser.routing import resolve_file_parser_directives
+
+    assert resolve_file_parser_directives(tmp_path / "doc.pdf") == ("mineru", "iteP")
+    assert resolve_file_parser_directives(tmp_path / "doc.docx") == ("mineru", "iteP")
+    assert resolve_file_parser_directives(tmp_path / "doc.txt") == ("legacy", "F")
 
 
 def test_register_local_hybrid_bm25_storage(monkeypatch):

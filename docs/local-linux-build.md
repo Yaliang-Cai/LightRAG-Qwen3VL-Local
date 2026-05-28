@@ -137,6 +137,14 @@ MINERU_LOCAL_IMAGE_ANALYSIS=true
 
 `.txt` 和 `.md` 使用 legacy text ingestion，不需要 MinerU。
 
+LightRAG 官方 parser routing 使用无点后缀，不是 shell glob。例如：
+
+```env
+LIGHTRAG_PARSER=pdf:mineru-iteP,docx:mineru-iteP,txt:legacy-F,md:legacy-F
+```
+
+不要写成 `*.pdf:mineru-iteP`，否则官方 routing 匹配不到，会回退到 legacy parser。
+
 ## 建库
 
 先 dry-run 看文件数、配置和可复用 PDF 命中情况：

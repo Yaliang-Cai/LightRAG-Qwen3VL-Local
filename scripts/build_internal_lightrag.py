@@ -38,12 +38,12 @@ DEFAULT_EXTENSIONS = (
     ".doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md"
 )
 DEFAULT_LIGHTRAG_PARSER = (
-    "*.pdf:mineru-iteP,*.doc:mineru-iteP,*.docx:mineru-iteP,"
-    "*.ppt:mineru-iteP,*.pptx:mineru-iteP,*.xls:mineru-iteP,"
-    "*.xlsx:mineru-iteP,*.png:mineru-iteP,*.jpg:mineru-iteP,"
-    "*.jpeg:mineru-iteP,*.bmp:mineru-iteP,*.tiff:mineru-iteP,"
-    "*.tif:mineru-iteP,*.gif:mineru-iteP,*.webp:mineru-iteP,"
-    "*.txt:legacy-F,*.md:legacy-F"
+    "pdf:mineru-iteP,doc:mineru-iteP,docx:mineru-iteP,"
+    "ppt:mineru-iteP,pptx:mineru-iteP,xls:mineru-iteP,"
+    "xlsx:mineru-iteP,png:mineru-iteP,jpg:mineru-iteP,"
+    "jpeg:mineru-iteP,bmp:mineru-iteP,tiff:mineru-iteP,"
+    "tif:mineru-iteP,gif:mineru-iteP,webp:mineru-iteP,"
+    "txt:legacy-F,md:legacy-F"
 )
 TEXT_EXTENSIONS = {
     ".txt",
