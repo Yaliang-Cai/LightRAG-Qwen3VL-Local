@@ -11,6 +11,7 @@
 - workspace：`internal_lightrag`
 - LLM/VLM endpoint：`http://localhost:8001/v1`
 - LLM/VLM model：`Qwen/Qwen3-VL-30B-A3B-Instruct-FP8`
+- Tokenizer：本地加载 `/data/y50056788/Yaliang/models/Qwen3-VL-30B-A3B-Instruct-FP8`
 - Embedding：进程内加载 `/data/h50056787/models/bge-m3`，不开端口
 - Reranker：进程内加载 `/data/h50056787/models/bge-reranker-v2-m3`，不开端口
 - 建库默认不加载 reranker；查询默认启用 reranker
@@ -91,6 +92,7 @@ cp configs/local-qwen3vl.env.example configs/local-qwen3vl.env
 编辑 `configs/local-qwen3vl.env`，至少确认：
 
 - `NEO4J_PASSWORD`
+- `LLM_TOKENIZER_MODEL_PATH`
 - embedding/reranker 模型路径
 - `MINERU_LOCAL_ENDPOINT`
 - `DEV_LIBREOFFICE_PDF_ROOT`
@@ -112,6 +114,15 @@ vllm serve /data/y50056788/Yaliang/models/Qwen3-VL-30B-A3B-Instruct-FP8 \
   --host 0.0.0.0 \
   --port 8001 \
   --api-key EMPTY
+```
+
+脚本会通过 `LLM_TOKENIZER_MODEL_PATH` 注入本地 HuggingFace tokenizer，并设置
+`local_files_only=True`。这样不会触发官方默认 `tiktoken` 下载
+`o200k_base.tiktoken`，也不需要访问 `openaipublic.blob.core.windows.net`。
+如果你的 Qwen3-VL 模型目录不同，改 `configs/local-qwen3vl.env`：
+
+```env
+LLM_TOKENIZER_MODEL_PATH=/你的/Qwen3-VL-30B-A3B-Instruct-FP8/本地目录
 ```
 
 PDF、Office、图片文件需要 MinerU-compatible local service：

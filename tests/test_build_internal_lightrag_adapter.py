@@ -48,6 +48,7 @@ def test_runtime_env_defaults_match_local_concurrency(monkeypatch, tmp_path):
         "EMBEDDING_TOKEN_LIMIT",
         "RERANK_BY_DEFAULT",
         "VLM_MAX_ASYNC_LLM",
+        "LLM_TOKENIZER_MODEL_PATH",
         "MAX_SOURCE_IDS_PER_ENTITY",
         "MAX_SOURCE_IDS_PER_RELATION",
         "REUSE_DEV_LIBREOFFICE_PDFS",
@@ -95,6 +96,10 @@ def test_runtime_env_defaults_match_local_concurrency(monkeypatch, tmp_path):
     assert adapter.os.environ["RAGANYTHING_EMBEDDING_BATCH_NUM"] == "4"
     assert adapter.os.environ["MAX_EXTRACT_INPUT_TOKENS"] == "20480"
     assert adapter.os.environ["EMBEDDING_TOKEN_LIMIT"] == "8192"
+    assert (
+        adapter.os.environ["LLM_TOKENIZER_MODEL_PATH"]
+        == "/data/y50056788/Yaliang/models/Qwen3-VL-30B-A3B-Instruct-FP8"
+    )
     assert adapter.os.environ["MAX_SOURCE_IDS_PER_ENTITY"] == "999999"
     assert adapter.os.environ["MAX_SOURCE_IDS_PER_RELATION"] == "999999"
     assert adapter.os.environ["REUSE_DEV_LIBREOFFICE_PDFS"] == "true"

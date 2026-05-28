@@ -21,6 +21,7 @@ DEFAULT_STORAGE_ROOT = Path("/data/y50056788/Yaliang/internal_lightrag")
 DEFAULT_WORKSPACE = "internal_lightrag"
 DEFAULT_MODEL = "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
 DEFAULT_VLLM_API_BASE = "http://localhost:8001/v1"
+DEFAULT_TOKENIZER_MODEL = "/data/y50056788/Yaliang/models/Qwen3-VL-30B-A3B-Instruct-FP8"
 DEFAULT_EMBEDDING_MODEL = "/data/h50056787/models/bge-m3"
 DEFAULT_RERANK_MODEL = "/data/h50056787/models/bge-reranker-v2-m3"
 DEFAULT_DEV_LIBREOFFICE_PDF_ROOT = Path(
@@ -629,6 +630,7 @@ def _apply_runtime_env(config: BuildConfig) -> None:
         "VLLM_API_BASE": DEFAULT_VLLM_API_BASE,
         "VLLM_API_KEY": "EMPTY",
         "LLM_MODEL_NAME": DEFAULT_MODEL,
+        "LLM_TOKENIZER_MODEL_PATH": DEFAULT_TOKENIZER_MODEL,
         "RAGANYTHING_EMBEDDING_MODEL_PATH": DEFAULT_EMBEDDING_MODEL,
         "RAGANYTHING_RERANK_MODEL_PATH": DEFAULT_RERANK_MODEL,
         "RAGANYTHING_EMBEDDING_DIM": "1024",
@@ -660,6 +662,7 @@ def _settings_summary(config: BuildConfig, files: list[Path] | None = None) -> d
     keys = (
         "LLM_MODEL_NAME",
         "VLLM_API_BASE",
+        "LLM_TOKENIZER_MODEL_PATH",
         "RAGANYTHING_EMBEDDING_MODEL_PATH",
         "RAGANYTHING_RERANK_MODEL_PATH",
         "RAGANYTHING_EMBEDDING_DIM",
@@ -728,6 +731,7 @@ def _log_settings(config: BuildConfig, files: list[Path] | None = None) -> None:
         summary["env"].get("LLM_MODEL_NAME"),
         summary["env"].get("VLLM_API_BASE"),
     )
+    LOGGER.info("Tokenizer: %s", summary["env"].get("LLM_TOKENIZER_MODEL_PATH"))
     LOGGER.info(
         "Embedding: %s dim=%s batch=%s max_async=%s token_limit=%s",
         summary["env"].get("RAGANYTHING_EMBEDDING_MODEL_PATH"),
@@ -850,6 +854,21 @@ def _make_embedding_func():
         func=compute,
         model_name=Path(model_path).name or "local_embedding",
     )
+
+
+def _make_tokenizer():
+    from transformers import AutoTokenizer
+
+    from lightrag.utils import Tokenizer
+
+    model_path = os.getenv("LLM_TOKENIZER_MODEL_PATH", DEFAULT_TOKENIZER_MODEL)
+    LOGGER.info("Loading tokenizer locally: %s", model_path)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path,
+        trust_remote_code=True,
+        local_files_only=True,
+    )
+    return Tokenizer(Path(model_path).name or os.getenv("LLM_MODEL_NAME", DEFAULT_MODEL), tokenizer)
 
 
 def _make_rerank_func():
@@ -1000,6 +1019,7 @@ def _make_rag(config: BuildConfig, include_reranker: bool) -> Any:
 
     llm_func = _make_llm_func()
     embedding_func = _make_embedding_func()
+    tokenizer = _make_tokenizer()
     rerank_func = _make_rerank_func() if include_reranker else None
     if include_reranker:
         LOGGER.info("Reranker is enabled for this run.")
@@ -1012,6 +1032,7 @@ def _make_rag(config: BuildConfig, include_reranker: bool) -> Any:
     return LightRAG(
         working_dir=config.working_dir.as_posix(),
         workspace=config.workspace,
+        tokenizer=tokenizer,
         llm_model_func=llm_func,
         llm_model_name=os.getenv("LLM_MODEL_NAME", DEFAULT_MODEL),
         llm_model_max_async=_env_int("MAX_ASYNC", DEFAULT_MAX_ASYNC),
