@@ -15,6 +15,9 @@ from pathlib import Path
 from typing import Any
 
 LOGGER = logging.getLogger("build_internal_lightrag")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 DEFAULT_RAW_DIR = Path("/data/y50056788/Yaliang/datasets_raw")
 DEFAULT_STORAGE_ROOT = Path("/data/y50056788/Yaliang/internal_lightrag")
@@ -106,7 +109,7 @@ class BuildConfig:
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return REPO_ROOT
 
 
 def _load_env_file(path: Path) -> None:

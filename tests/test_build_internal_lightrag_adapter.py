@@ -33,6 +33,12 @@ def test_parser_defaults_keep_reranker_off_for_build_but_on_for_query():
     assert disabled_args.enable_query_rerank is False
 
 
+def test_script_adds_repo_root_to_import_path():
+    adapter = load_adapter()
+
+    assert str(adapter.REPO_ROOT) in adapter.sys.path
+
+
 def test_runtime_env_defaults_match_local_concurrency(monkeypatch, tmp_path):
     adapter = load_adapter()
     for key in (
