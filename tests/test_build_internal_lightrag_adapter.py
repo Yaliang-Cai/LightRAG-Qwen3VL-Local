@@ -48,7 +48,12 @@ def test_runtime_env_defaults_match_local_concurrency(monkeypatch, tmp_path):
         "EMBEDDING_TOKEN_LIMIT",
         "RERANK_BY_DEFAULT",
         "VLM_MAX_ASYNC_LLM",
+        "MAX_SOURCE_IDS_PER_ENTITY",
+        "MAX_SOURCE_IDS_PER_RELATION",
+        "REUSE_DEV_LIBREOFFICE_PDFS",
+        "DEV_LIBREOFFICE_PDF_ROOT",
         "LIGHTRAG_VECTOR_STORAGE",
+        "LIGHTRAG_PARSER",
         "QDRANT_ENABLE_SPARSE_BM25",
         "QDRANT_SPARSE_BM25_MODEL",
         "QDRANT_RETRIEVAL_MODE",
@@ -90,9 +95,18 @@ def test_runtime_env_defaults_match_local_concurrency(monkeypatch, tmp_path):
     assert adapter.os.environ["RAGANYTHING_EMBEDDING_BATCH_NUM"] == "4"
     assert adapter.os.environ["MAX_EXTRACT_INPUT_TOKENS"] == "20480"
     assert adapter.os.environ["EMBEDDING_TOKEN_LIMIT"] == "8192"
+    assert adapter.os.environ["MAX_SOURCE_IDS_PER_ENTITY"] == "999999"
+    assert adapter.os.environ["MAX_SOURCE_IDS_PER_RELATION"] == "999999"
+    assert adapter.os.environ["REUSE_DEV_LIBREOFFICE_PDFS"] == "true"
+    assert (
+        adapter.os.environ["DEV_LIBREOFFICE_PDF_ROOT"]
+        == "/data/y50056788/Yaliang/internal/output/internal"
+    )
     assert adapter.os.environ["RERANK_BY_DEFAULT"] == "true"
     assert adapter.os.environ["VLM_MAX_ASYNC_LLM"] == "2"
     assert adapter.os.environ["LIGHTRAG_VECTOR_STORAGE"] == "QdrantHybridBM25VectorDBStorage"
+    assert "*.docx:mineru-iteP" in adapter.os.environ["LIGHTRAG_PARSER"]
+    assert "*.txt:legacy-F" in adapter.os.environ["LIGHTRAG_PARSER"]
     assert adapter.os.environ["QDRANT_ENABLE_SPARSE_BM25"] == "true"
     assert adapter.os.environ["QDRANT_SPARSE_BM25_MODEL"] == "Qdrant/bm25"
     assert adapter.os.environ["QDRANT_RETRIEVAL_MODE"] == "hybrid"
@@ -194,6 +208,104 @@ def test_hybrid_bm25_get_vectors_by_ids_returns_dense_vector(monkeypatch):
     vectors = asyncio.run(storage.get_vectors_by_ids(["chunk-1"]))
 
     assert vectors == {"chunk-1": [0.1, 0.2, 0.3, 0.4]}
+
+
+def test_converted_pdf_candidates_match_rag_lund_preferred_then_legacy(tmp_path):
+    adapter = load_adapter()
+
+    source = tmp_path / "A report 2026!.docx"
+    root = tmp_path / "output" / "internal"
+
+    candidates = adapter._converted_pdf_paths(source, root)
+
+    assert candidates == (
+        root / "A_report_2026_" / "A report 2026!.pdf",
+        root / "A report 2026!.pdf",
+    )
+
+
+def test_prepare_staged_input_reuses_valid_development_pdf(tmp_path):
+    adapter = load_adapter()
+
+    raw_dir = tmp_path / "raw"
+    pdf_root = tmp_path / "dev" / "output" / "internal"
+    raw_dir.mkdir()
+    source = raw_dir / "deck one.pptx"
+    source.write_bytes(b"pptx source")
+    cached_pdf = pdf_root / "deck_one" / "deck one.pdf"
+    cached_pdf.parent.mkdir(parents=True)
+    cached_pdf.write_bytes(b"%PDF-1.7 cached")
+    config = adapter.BuildConfig(
+        raw_dir=raw_dir,
+        storage_root=tmp_path / "storage",
+        working_dir=tmp_path / "working",
+        input_dir=tmp_path / "inputs",
+        report_dir=tmp_path / "reports",
+        workspace="internal_lightrag",
+        max_files=None,
+        max_parallel_insert=2,
+        recursive=True,
+        extensions=(".pptx",),
+        dry_run=True,
+        enable_build_rerank=False,
+        enable_query_rerank=True,
+        query=None,
+        query_file=None,
+        query_only=False,
+        query_mode="mix",
+        top_k=None,
+        chunk_top_k=None,
+        reuse_dev_libreoffice_pdfs=True,
+        dev_libreoffice_pdf_root=pdf_root,
+    )
+
+    stage_info = adapter._prepare_staged_input(source, config)
+
+    assert stage_info["reused_converted_pdf"] is True
+    assert stage_info["converted_pdf"] == cached_pdf.as_posix()
+    assert stage_info["effective_source"] == cached_pdf.as_posix()
+    assert stage_info["file_path"].startswith("deck one__")
+    assert stage_info["file_path"].endswith(".pdf")
+    assert Path(stage_info["staged"]).exists()
+
+
+def test_reuse_preview_falls_back_to_original_when_cache_missing(tmp_path):
+    adapter = load_adapter()
+
+    source = tmp_path / "raw" / "missing.docx"
+    source.parent.mkdir()
+    source.write_bytes(b"docx source")
+    config = adapter.BuildConfig(
+        raw_dir=source.parent,
+        storage_root=tmp_path / "storage",
+        working_dir=tmp_path / "working",
+        input_dir=tmp_path / "inputs",
+        report_dir=tmp_path / "reports",
+        workspace="internal_lightrag",
+        max_files=None,
+        max_parallel_insert=2,
+        recursive=True,
+        extensions=(".docx",),
+        dry_run=True,
+        enable_build_rerank=False,
+        enable_query_rerank=True,
+        query=None,
+        query_file=None,
+        query_only=False,
+        query_mode="mix",
+        top_k=None,
+        chunk_top_k=None,
+        reuse_dev_libreoffice_pdfs=True,
+        dev_libreoffice_pdf_root=tmp_path / "dev" / "output" / "internal",
+    )
+
+    records = adapter._build_file_reuse_preview(config, [source])
+    reuse = adapter._reuse_summary(records)
+
+    assert records[0]["would_reuse_converted_pdf"] is False
+    assert records[0]["effective_source"] == source.as_posix()
+    assert reuse["reused_converted_pdf_count"] == 0
+    assert reuse["fallback_to_original_count"] == 1
 
 
 def test_compact_summary_counts_processed_failed_and_enqueue_errors(tmp_path):

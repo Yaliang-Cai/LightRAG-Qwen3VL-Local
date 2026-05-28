@@ -23,12 +23,23 @@ DEFAULT_MODEL = "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
 DEFAULT_VLLM_API_BASE = "http://localhost:8001/v1"
 DEFAULT_EMBEDDING_MODEL = "/data/h50056787/models/bge-m3"
 DEFAULT_RERANK_MODEL = "/data/h50056787/models/bge-reranker-v2-m3"
+DEFAULT_DEV_LIBREOFFICE_PDF_ROOT = Path(
+    "/data/y50056788/Yaliang/internal/output/internal"
+)
 DEFAULT_MAX_ASYNC = 16
 DEFAULT_EMBEDDING_BATCH_NUM = 4
 LOCAL_HYBRID_VECTOR_STORAGE = "QdrantHybridBM25VectorDBStorage"
 DEFAULT_EXTENSIONS = (
     ".pdf,.jpg,.jpeg,.png,.bmp,.tiff,.tif,.gif,.webp,"
     ".doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md"
+)
+DEFAULT_LIGHTRAG_PARSER = (
+    "*.pdf:mineru-iteP,*.doc:mineru-iteP,*.docx:mineru-iteP,"
+    "*.ppt:mineru-iteP,*.pptx:mineru-iteP,*.xls:mineru-iteP,"
+    "*.xlsx:mineru-iteP,*.png:mineru-iteP,*.jpg:mineru-iteP,"
+    "*.jpeg:mineru-iteP,*.bmp:mineru-iteP,*.tiff:mineru-iteP,"
+    "*.tif:mineru-iteP,*.gif:mineru-iteP,*.webp:mineru-iteP,"
+    "*.txt:legacy-F,*.md:legacy-F"
 )
 TEXT_EXTENSIONS = {
     ".txt",
@@ -65,6 +76,7 @@ TEXT_EXTENSIONS = {
     ".scss",
     ".less",
 }
+OFFICE_EXTENSIONS = {".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
 
 
 @dataclass(frozen=True)
@@ -88,6 +100,8 @@ class BuildConfig:
     query_mode: str
     top_k: int | None
     chunk_top_k: int | None
+    reuse_dev_libreoffice_pdfs: bool = True
+    dev_libreoffice_pdf_root: Path = DEFAULT_DEV_LIBREOFFICE_PDF_ROOT
 
 
 def _repo_root() -> Path:
@@ -124,6 +138,13 @@ def _env_int(name: str, default: int) -> int:
         return int(os.getenv(name, str(default)))
     except ValueError:
         return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _parse_extensions(value: str) -> tuple[str, ...]:
@@ -171,11 +192,79 @@ def _file_sha(path: Path, limit: int = 1024 * 1024) -> str:
     return digest.hexdigest()[:10]
 
 
-def _stage_file(source: Path, input_dir: Path, workspace: str) -> Path:
+def _safe_stem(path: Path) -> str:
+    stem = path.stem.strip()
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in stem) or "file"
+
+
+def _converted_pdf_paths(source: Path, output_root: Path) -> tuple[Path, ...]:
+    preferred_pdf = output_root / _safe_stem(source) / f"{source.stem}.pdf"
+    legacy_root_pdf = output_root / f"{source.stem}.pdf"
+    if preferred_pdf == legacy_root_pdf:
+        return (preferred_pdf,)
+    return (preferred_pdf, legacy_root_pdf)
+
+
+def _valid_converted_pdf(pdf_path: Path, source_path: Path) -> bool:
+    try:
+        if not pdf_path.exists() or not pdf_path.is_file() or pdf_path.stat().st_size <= 0:
+            return False
+        if pdf_path.stat().st_mtime < source_path.stat().st_mtime:
+            LOGGER.warning(
+                "Reusing converted PDF older than source file=%s pdf=%s. "
+                "Delete the PDF to force reconversion after source content changes.",
+                source_path.name,
+                pdf_path,
+            )
+        return True
+    except OSError:
+        return False
+
+
+def _find_valid_converted_pdf(source: Path, output_root: Path) -> Path | None:
+    for pdf_path in _converted_pdf_paths(source, output_root):
+        if _valid_converted_pdf(pdf_path, source):
+            return pdf_path
+    return None
+
+
+def _resolve_effective_source(source: Path, config: BuildConfig) -> dict[str, Any]:
+    candidates: tuple[Path, ...] = ()
+    converted_pdf: Path | None = None
+    if config.reuse_dev_libreoffice_pdfs and source.suffix.lower() in OFFICE_EXTENSIONS:
+        candidates = _converted_pdf_paths(source, config.dev_libreoffice_pdf_root)
+        converted_pdf = _find_valid_converted_pdf(source, config.dev_libreoffice_pdf_root)
+    if converted_pdf is None:
+        return {
+            "source": source,
+            "effective_source": source,
+            "reused_converted_pdf": False,
+            "converted_pdf": None,
+            "converted_pdf_candidates": [path.as_posix() for path in candidates],
+        }
+    return {
+        "source": source,
+        "effective_source": converted_pdf,
+        "reused_converted_pdf": True,
+        "converted_pdf": converted_pdf.as_posix(),
+        "converted_pdf_candidates": [path.as_posix() for path in candidates],
+    }
+
+
+def _stage_file(
+    source: Path,
+    input_dir: Path,
+    workspace: str,
+    *,
+    identity_source: Path | None = None,
+    suffix: str | None = None,
+) -> Path:
     target_dir = input_dir / workspace
     target_dir.mkdir(parents=True, exist_ok=True)
-    stem = source.stem[:120] or "document"
-    target = target_dir / f"{stem}__{_file_sha(source)}{source.suffix.lower()}"
+    identity = identity_source or source
+    target_suffix = suffix if suffix is not None else source.suffix.lower()
+    stem = identity.stem[:120] or "document"
+    target = target_dir / f"{stem}__{_file_sha(identity)}{target_suffix.lower()}"
     if target.exists():
         return target
     try:
@@ -190,6 +279,75 @@ def _stage_file(source: Path, input_dir: Path, workspace: str) -> Path:
         pass
     shutil.copy2(source, target)
     return target
+
+
+def _prepare_staged_input(source: Path, config: BuildConfig) -> dict[str, Any]:
+    resolved = _resolve_effective_source(source, config)
+    effective_source = Path(resolved["effective_source"])
+    staged = _stage_file(
+        effective_source,
+        config.input_dir,
+        config.workspace,
+        identity_source=source,
+        suffix=effective_source.suffix.lower(),
+    )
+    return {
+        **resolved,
+        "effective_source": effective_source.as_posix(),
+        "staged": staged.as_posix(),
+        "file_path": staged.name,
+    }
+
+
+def _build_file_reuse_preview(config: BuildConfig, files: list[Path]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for source in files:
+        resolved = _resolve_effective_source(source, config)
+        effective_source = Path(resolved["effective_source"])
+        records.append(
+            {
+                "source": source.as_posix(),
+                "effective_source": effective_source.as_posix(),
+                "would_reuse_converted_pdf": bool(resolved["reused_converted_pdf"]),
+                "reused_converted_pdf": bool(resolved["reused_converted_pdf"]),
+                "converted_pdf": resolved["converted_pdf"],
+                "converted_pdf_candidates": resolved["converted_pdf_candidates"],
+                "staged_basename": (
+                    f"{(source.stem[:120] or 'document')}__"
+                    f"{_file_sha(source)}{effective_source.suffix.lower()}"
+                ),
+            }
+        )
+    return records
+
+
+def _reuse_summary(
+    records: list[dict[str, Any]], config: BuildConfig | None = None
+) -> dict[str, Any]:
+    reused = [
+        record
+        for record in records
+        if record.get("reused_converted_pdf") or record.get("would_reuse_converted_pdf")
+    ]
+    enabled = (
+        config.reuse_dev_libreoffice_pdfs
+        if config is not None
+        else _env_bool("REUSE_DEV_LIBREOFFICE_PDFS", True)
+    )
+    pdf_root = (
+        config.dev_libreoffice_pdf_root.as_posix()
+        if config is not None
+        else os.getenv(
+            "DEV_LIBREOFFICE_PDF_ROOT", DEFAULT_DEV_LIBREOFFICE_PDF_ROOT.as_posix()
+        )
+    )
+    return {
+        "enabled": enabled,
+        "dev_libreoffice_pdf_root": pdf_root,
+        "file_count": len(records),
+        "reused_converted_pdf_count": len(reused),
+        "fallback_to_original_count": len(records) - len(reused),
+    }
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -271,16 +429,41 @@ def _build_compact_summary(
 ) -> dict[str, Any]:
     result = result or {}
     documents = list(result.get("documents", {}).get("documents", []))
+    file_records: list[dict[str, Any]] = []
 
     relevant_files: set[str] = set()
     for record in result.get("enqueued", []):
         staged = record.get("staged")
         if staged:
             relevant_files.add(Path(str(staged)).name)
+        file_records.append(
+            {
+                "source": record.get("source"),
+                "effective_source": record.get("effective_source"),
+                "staged": staged,
+                "file_path": Path(str(staged)).name if staged else record.get("file_path"),
+                "status": "enqueued",
+                "reused_converted_pdf": bool(record.get("reused_converted_pdf")),
+                "converted_pdf": record.get("converted_pdf"),
+            }
+        )
     for record in result.get("skipped_existing", []):
         file_path = record.get("file_path") or record.get("staged")
         if file_path:
             relevant_files.add(Path(str(file_path)).name)
+        file_records.append(
+            {
+                "source": record.get("source"),
+                "effective_source": record.get("effective_source"),
+                "staged": record.get("staged"),
+                "file_path": Path(str(file_path)).name if file_path else None,
+                "status": "skipped_existing",
+                "doc_id": record.get("doc_id"),
+                "doc_status": record.get("status"),
+                "reused_converted_pdf": bool(record.get("reused_converted_pdf")),
+                "converted_pdf": record.get("converted_pdf"),
+            }
+        )
 
     selected_docs: list[dict[str, Any]] = []
     status_counts: dict[str, int] = {}
@@ -290,6 +473,18 @@ def _build_compact_summary(
             {
                 "file": failure.get("source", "unknown"),
                 "stage": "enqueue",
+                "error": failure.get("error", ""),
+            }
+        )
+        file_records.append(
+            {
+                "source": failure.get("source"),
+                "effective_source": failure.get("effective_source"),
+                "staged": failure.get("staged"),
+                "file_path": failure.get("file_path"),
+                "status": "failed_enqueue",
+                "reused_converted_pdf": bool(failure.get("reused_converted_pdf")),
+                "converted_pdf": failure.get("converted_pdf"),
                 "error": failure.get("error", ""),
             }
         )
@@ -328,6 +523,9 @@ def _build_compact_summary(
         status_counts.get(status, 0)
         for status in ("pending", "parsing", "analyzing", "processing", "preprocessed")
     )
+    if not file_records:
+        file_records = list(summary_base.get("file_records", []))
+    reuse = result.get("reuse") or summary_base.get("reuse", {})
     return {
         "workspace": summary_base.get("workspace"),
         "raw_dir": summary_base.get("raw_dir"),
@@ -344,6 +542,8 @@ def _build_compact_summary(
         "failed_enqueue_count": result.get("failed_enqueue_count", 0),
         "status_counts": dict(sorted(status_counts.items())),
         "failed_files": failed_files,
+        "reuse": reuse,
+        "file_records": file_records,
         "documents": selected_docs,
         "settings": summary_base.get("settings", {}),
     }
@@ -399,6 +599,10 @@ def _build_config(args: argparse.Namespace) -> BuildConfig:
         query_mode=str(args.query_mode),
         top_k=args.top_k,
         chunk_top_k=args.chunk_top_k,
+        reuse_dev_libreoffice_pdfs=_env_bool("REUSE_DEV_LIBREOFFICE_PDFS", True),
+        dev_libreoffice_pdf_root=_env_path(
+            "DEV_LIBREOFFICE_PDF_ROOT", DEFAULT_DEV_LIBREOFFICE_PDF_ROOT
+        ),
     )
 
 
@@ -411,14 +615,17 @@ def _apply_runtime_env(config: BuildConfig) -> None:
         "LIGHTRAG_DOC_STATUS_STORAGE": "JsonDocStatusStorage",
         "LIGHTRAG_GRAPH_STORAGE": "Neo4JStorage",
         "LIGHTRAG_VECTOR_STORAGE": LOCAL_HYBRID_VECTOR_STORAGE,
+        "LIGHTRAG_PARSER": DEFAULT_LIGHTRAG_PARSER,
         "QDRANT_ENABLE_SPARSE_BM25": "true",
         "QDRANT_SPARSE_BM25_MODEL": "Qdrant/bm25",
         "QDRANT_RETRIEVAL_MODE": "hybrid",
         "QDRANT_COLLECTION_PREFIX": "local_lightrag_bm25",
         "MAX_PARALLEL_INSERT": str(config.max_parallel_insert),
-        "MAX_SOURCE_IDS_PER_ENTITY": "99999",
-        "MAX_SOURCE_IDS_PER_RELATION": "99999",
+        "MAX_SOURCE_IDS_PER_ENTITY": "999999",
+        "MAX_SOURCE_IDS_PER_RELATION": "999999",
         "SOURCE_IDS_LIMIT_METHOD": "FIFO",
+        "REUSE_DEV_LIBREOFFICE_PDFS": "true",
+        "DEV_LIBREOFFICE_PDF_ROOT": DEFAULT_DEV_LIBREOFFICE_PDF_ROOT.as_posix(),
         "VLLM_API_BASE": DEFAULT_VLLM_API_BASE,
         "VLLM_API_KEY": "EMPTY",
         "LLM_MODEL_NAME": DEFAULT_MODEL,
@@ -473,6 +680,8 @@ def _settings_summary(config: BuildConfig, files: list[Path] | None = None) -> d
         "MAX_SOURCE_IDS_PER_ENTITY",
         "MAX_SOURCE_IDS_PER_RELATION",
         "SOURCE_IDS_LIMIT_METHOD",
+        "REUSE_DEV_LIBREOFFICE_PDFS",
+        "DEV_LIBREOFFICE_PDF_ROOT",
         "RERANK_BY_DEFAULT",
         "LIGHTRAG_PARSER",
         "LIGHTRAG_VECTOR_STORAGE",
@@ -500,6 +709,8 @@ def _settings_summary(config: BuildConfig, files: list[Path] | None = None) -> d
         "query_mode": config.query_mode,
         "top_k": config.top_k,
         "chunk_top_k": config.chunk_top_k,
+        "reuse_dev_libreoffice_pdfs": config.reuse_dev_libreoffice_pdfs,
+        "dev_libreoffice_pdf_root": config.dev_libreoffice_pdf_root.as_posix(),
         "file_count": len(files) if files is not None else None,
         "env": {key: os.getenv(key) for key in keys if os.getenv(key) is not None},
     }
@@ -554,6 +765,11 @@ def _log_settings(config: BuildConfig, files: list[Path] | None = None) -> None:
         summary["env"].get("MAX_EXTRACT_INPUT_TOKENS"),
         summary["env"].get("MAX_SOURCE_IDS_PER_ENTITY"),
         summary["env"].get("MAX_SOURCE_IDS_PER_RELATION"),
+    )
+    LOGGER.info(
+        "LibreOffice PDF reuse: enabled=%s root=%s",
+        summary["reuse_dev_libreoffice_pdfs"],
+        summary["dev_libreoffice_pdf_root"],
     )
     LOGGER.info("Parser routing: %s", summary["env"].get("LIGHTRAG_PARSER", "<official default>"))
     if files is not None:
@@ -683,7 +899,16 @@ def _make_rerank_func():
 
 
 async def _enqueue_staged_file(
-    rag: Any, source: Path, staged: Path, config: BuildConfig, track_id: str
+    rag: Any,
+    source: Path,
+    staged: Path,
+    config: BuildConfig,
+    track_id: str,
+    *,
+    effective_source: Path | None = None,
+    reused_converted_pdf: bool = False,
+    converted_pdf: str | None = None,
+    converted_pdf_candidates: list[str] | None = None,
 ) -> dict[str, Any]:
     from lightrag.constants import (
         FULL_DOCS_FORMAT_PENDING_PARSE,
@@ -721,7 +946,12 @@ async def _enqueue_staged_file(
         )
     return {
         "source": source.as_posix(),
+        "effective_source": (effective_source or staged).as_posix(),
         "staged": staged.as_posix(),
+        "file_path": staged.name,
+        "reused_converted_pdf": bool(reused_converted_pdf),
+        "converted_pdf": converted_pdf,
+        "converted_pdf_candidates": converted_pdf_candidates or [],
         "parser": engine,
         "process_options": process_options,
         "enqueue_seconds": time.time() - started,
@@ -729,8 +959,18 @@ async def _enqueue_staged_file(
 
 
 async def _enqueue_file(rag: Any, source: Path, config: BuildConfig, track_id: str) -> dict[str, Any]:
-    staged = _stage_file(source, config.input_dir, config.workspace)
-    return await _enqueue_staged_file(rag, source, staged, config, track_id)
+    stage_info = _prepare_staged_input(source, config)
+    return await _enqueue_staged_file(
+        rag,
+        source,
+        Path(stage_info["staged"]),
+        config,
+        track_id,
+        effective_source=Path(stage_info["effective_source"]),
+        reused_converted_pdf=bool(stage_info["reused_converted_pdf"]),
+        converted_pdf=stage_info["converted_pdf"],
+        converted_pdf_candidates=stage_info["converted_pdf_candidates"],
+    )
 
 
 async def _collect_doc_status(rag: Any) -> dict[str, Any]:
@@ -836,17 +1076,39 @@ async def _run_build(config: BuildConfig, files: list[Path]) -> dict[str, Any]:
             len(existing_by_file),
         )
         for index, source in enumerate(files, start=1):
+            stage_info: dict[str, Any] = {}
             try:
-                staged = _stage_file(source, config.input_dir, config.workspace)
+                stage_info = _prepare_staged_input(source, config)
+                staged = Path(stage_info["staged"])
+                if stage_info["reused_converted_pdf"]:
+                    LOGGER.info(
+                        "Reusing LibreOffice PDF [%d/%d]: source=%s pdf=%s staged=%s",
+                        index,
+                        len(files),
+                        source,
+                        stage_info["converted_pdf"],
+                        staged,
+                    )
+                elif source.suffix.lower() in OFFICE_EXTENSIONS and config.reuse_dev_libreoffice_pdfs:
+                    LOGGER.info(
+                        "No reusable LibreOffice PDF found [%d/%d]: source=%s; falling back to original file.",
+                        index,
+                        len(files),
+                        source,
+                    )
                 existing = _existing_doc_record_for_source(staged, existing_by_file)
                 if existing is not None:
                     record = {
                         "source": source.as_posix(),
+                        "effective_source": stage_info["effective_source"],
                         "staged": staged.as_posix(),
                         "file_path": staged.name,
                         "doc_id": existing.get("doc_id", ""),
                         "status": _doc_status_name(existing),
                         "error_msg": existing.get("error_msg"),
+                        "reused_converted_pdf": bool(stage_info["reused_converted_pdf"]),
+                        "converted_pdf": stage_info["converted_pdf"],
+                        "converted_pdf_candidates": stage_info["converted_pdf_candidates"],
                     }
                     skipped_existing.append(record)
                     LOGGER.info(
@@ -866,21 +1128,47 @@ async def _run_build(config: BuildConfig, files: list[Path]) -> dict[str, Any]:
                     source,
                     source.stat().st_size,
                 )
-                record = await _enqueue_staged_file(rag, source, staged, config, track_id)
+                record = await _enqueue_staged_file(
+                    rag,
+                    source,
+                    staged,
+                    config,
+                    track_id,
+                    effective_source=Path(stage_info["effective_source"]),
+                    reused_converted_pdf=bool(stage_info["reused_converted_pdf"]),
+                    converted_pdf=stage_info["converted_pdf"],
+                    converted_pdf_candidates=stage_info["converted_pdf_candidates"],
+                )
                 enqueued.append(record)
                 LOGGER.info(
-                    "Enqueue done [%d/%d]: %s parser=%s options=%s staged=%s seconds=%.2f",
+                    "Enqueue done [%d/%d]: %s parser=%s options=%s staged=%s reused_pdf=%s seconds=%.2f",
                     index,
                     len(files),
                     source.name,
                     record["parser"],
                     record["process_options"],
                     record["staged"],
+                    record["reused_converted_pdf"],
                     record["enqueue_seconds"],
                 )
             except Exception as exc:
                 LOGGER.exception("Failed to enqueue %s", source)
-                failures.append({"source": source.as_posix(), "error": str(exc)})
+                failures.append(
+                    {
+                        "source": source.as_posix(),
+                        "effective_source": stage_info.get("effective_source"),
+                        "staged": stage_info.get("staged"),
+                        "file_path": stage_info.get("file_path"),
+                        "reused_converted_pdf": bool(
+                            stage_info.get("reused_converted_pdf", False)
+                        ),
+                        "converted_pdf": stage_info.get("converted_pdf"),
+                        "converted_pdf_candidates": stage_info.get(
+                            "converted_pdf_candidates", []
+                        ),
+                        "error": str(exc),
+                    }
+                )
         if enqueued:
             LOGGER.info("Processing enqueue queue: %d document(s).", len(enqueued))
         else:
@@ -905,6 +1193,7 @@ async def _run_build(config: BuildConfig, files: list[Path]) -> dict[str, Any]:
         "enqueued": enqueued,
         "skipped_existing": skipped_existing,
         "failures": failures,
+        "reuse": _reuse_summary(enqueued + skipped_existing + failures, config),
         "documents": documents,
     }
 
@@ -1013,6 +1302,14 @@ def main(argv: list[str] | None = None) -> int:
     if config.max_files is not None:
         files = files[: max(0, int(config.max_files))]
     _log_settings(config, files)
+    file_records = _build_file_reuse_preview(config, files)
+    reuse = _reuse_summary(file_records, config)
+    LOGGER.info(
+        "LibreOffice PDF reuse preview: reused=%d fallback=%d total=%d",
+        reuse["reused_converted_pdf_count"],
+        reuse["fallback_to_original_count"],
+        reuse["file_count"],
+    )
 
     summary_base = {
         "workspace": config.workspace,
@@ -1032,6 +1329,8 @@ def main(argv: list[str] | None = None) -> int:
         "chunk_top_k": config.chunk_top_k,
         "enable_build_rerank": config.enable_build_rerank,
         "enable_query_rerank": config.enable_query_rerank,
+        "reuse": reuse,
+        "file_records": file_records,
         "settings": _settings_summary(config, files),
     }
 
