@@ -61,6 +61,8 @@ def test_runtime_env_defaults_match_local_concurrency(monkeypatch, tmp_path):
         "MAX_SOURCE_IDS_PER_RELATION",
         "REUSE_DEV_LIBREOFFICE_PDFS",
         "DEV_LIBREOFFICE_PDF_ROOT",
+        "MINERU_POLL_INTERVAL_SECONDS",
+        "MINERU_MAX_POLLS",
         "LIGHTRAG_VECTOR_STORAGE",
         "LIGHTRAG_PARSER",
         "QDRANT_ENABLE_SPARSE_BM25",
@@ -116,6 +118,8 @@ def test_runtime_env_defaults_match_local_concurrency(monkeypatch, tmp_path):
         adapter.os.environ["DEV_LIBREOFFICE_PDF_ROOT"]
         == "/data/y50056788/Yaliang/internal/output/internal"
     )
+    assert adapter.os.environ["MINERU_POLL_INTERVAL_SECONDS"] == "5"
+    assert adapter.os.environ["MINERU_MAX_POLLS"] == "720"
     assert adapter.os.environ["RERANK_BY_DEFAULT"] == "true"
     assert adapter.os.environ["VLM_MAX_ASYNC_LLM"] == "2"
     assert adapter.os.environ["LIGHTRAG_VECTOR_STORAGE"] == "QdrantHybridBM25VectorDBStorage"

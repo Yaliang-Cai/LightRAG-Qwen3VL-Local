@@ -647,6 +647,8 @@ def _apply_runtime_env(config: BuildConfig) -> None:
         "MINERU_LOCAL_BACKEND": "hybrid-auto-engine",
         "MINERU_LOCAL_PARSE_METHOD": "auto",
         "MINERU_LOCAL_IMAGE_ANALYSIS": "true",
+        "MINERU_POLL_INTERVAL_SECONDS": "5",
+        "MINERU_MAX_POLLS": "720",
         "QDRANT_ENABLE_SPARSE_BM25": "true",
         "QDRANT_SPARSE_BM25_MODEL": "Qdrant/bm25",
         "QDRANT_RETRIEVAL_MODE": "hybrid",

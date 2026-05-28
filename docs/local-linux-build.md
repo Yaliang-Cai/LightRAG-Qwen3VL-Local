@@ -134,6 +134,8 @@ MINERU_LOCAL_ENDPOINT=http://127.0.0.1:8000
 MINERU_LOCAL_BACKEND=hybrid-auto-engine
 MINERU_LOCAL_PARSE_METHOD=auto
 MINERU_LOCAL_IMAGE_ANALYSIS=true
+MINERU_POLL_INTERVAL_SECONDS=5
+MINERU_MAX_POLLS=720
 ```
 
 `.txt` 和 `.md` 使用 legacy text ingestion，不需要 MinerU。
@@ -270,6 +272,8 @@ dense/BM25/hybrid；然后 `process_chunks_unified` 对去重后的候选列表 
 - `MAX_PARALLEL_PARSE_DOCLING=1`
 - `MAX_PARALLEL_ANALYZE=2`
 - `VLM_MAX_ASYNC_LLM=2`
+- `MINERU_POLL_INTERVAL_SECONDS=5`
+- `MINERU_MAX_POLLS=720`
 
 LightRAG 并发是分层的：
 
