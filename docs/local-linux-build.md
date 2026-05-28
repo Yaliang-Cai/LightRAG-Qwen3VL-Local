@@ -137,6 +137,9 @@ MINERU_LOCAL_IMAGE_ANALYSIS=true
 ```
 
 `.txt` 和 `.md` 使用 legacy text ingestion，不需要 MinerU。
+真实建库前脚本会检查 `MINERU_LOCAL_ENDPOINT/health`。这里必须是 `mineru-api`
+或 `mineru-router` 的 REST API，不是 JSON-RPC/MCP 服务；正确服务需要提供
+`/health`、`/tasks`、`/tasks/{task_id}` 和 `/tasks/{task_id}/result`。
 
 LightRAG 官方 parser routing 使用无点后缀，不是 shell glob。例如：
 

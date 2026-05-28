@@ -10,6 +10,8 @@ import os
 import shutil
 import sys
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -815,10 +817,36 @@ def _log_settings(config: BuildConfig, files: list[Path] | None = None) -> None:
         LOGGER.info("Selected files: %d", len(files))
 
 
-def _validate_runtime_config() -> None:
+def _validate_mineru_local_endpoint() -> None:
+    endpoint = os.getenv("MINERU_LOCAL_ENDPOINT", "").strip().rstrip("/")
+    if not endpoint:
+        raise RuntimeError("MINERU_LOCAL_ENDPOINT is required for local MinerU parsing.")
+    health_url = f"{endpoint}/health"
+    try:
+        with urllib.request.urlopen(health_url, timeout=5) as response:
+            body = response.read(4096).decode("utf-8", errors="replace")
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"MinerU local endpoint is not reachable at {health_url}: {exc}. "
+            "Start mineru-api/mineru-router, not a JSON-RPC/MCP service."
+        ) from exc
+    if '"jsonrpc"' in body.lower() or "parse error" in body.lower():
+        raise RuntimeError(
+            f"MINERU_LOCAL_ENDPOINT={endpoint} appears to be a JSON-RPC service, "
+            "but LightRAG expects MinerU REST API endpoints /health, /tasks, "
+            "/tasks/{task_id}, and /tasks/{task_id}/result."
+        )
+
+
+def _validate_runtime_config(*, check_services: bool = False) -> None:
     from lightrag.parser.routing import validate_parser_routing_config
 
     validate_parser_routing_config(os.getenv("LIGHTRAG_PARSER"))
+    if not check_services:
+        return
+    parser_rules = os.getenv("LIGHTRAG_PARSER", "")
+    if "mineru" in parser_rules and os.getenv("MINERU_API_MODE", "local") == "local":
+        _validate_mineru_local_endpoint()
 
 
 def _make_llm_func():
@@ -1364,7 +1392,7 @@ def main(argv: list[str] | None = None) -> int:
     if config.max_files is not None:
         files = files[: max(0, int(config.max_files))]
     _log_settings(config, files)
-    _validate_runtime_config()
+    _validate_runtime_config(check_services=not config.dry_run and not config.query_only)
     file_records = _build_file_reuse_preview(config, files)
     reuse = _reuse_summary(file_records, config)
     LOGGER.info(

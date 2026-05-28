@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import sys
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "build_internal_lightrag.py"
@@ -202,6 +203,29 @@ def test_legacy_glob_parser_rules_are_normalized(monkeypatch, tmp_path):
     from lightrag.parser.routing import resolve_file_parser_directives
 
     assert resolve_file_parser_directives(tmp_path / "cached.pdf") == ("mineru", "iteP")
+
+
+def test_mineru_preflight_rejects_jsonrpc_endpoint(monkeypatch):
+    adapter = load_adapter()
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, size):
+            return b'{"jsonrpc":"2.0","error":{"message":"Parse error"}}'
+
+    with mock.patch.object(adapter.urllib.request, "urlopen", return_value=Response()):
+        try:
+            adapter._validate_mineru_local_endpoint()
+        except RuntimeError as exc:
+            assert "JSON-RPC service" in str(exc)
+        else:
+            raise AssertionError("Expected JSON-RPC MinerU preflight failure")
 
 
 def test_register_local_hybrid_bm25_storage(monkeypatch):
