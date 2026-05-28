@@ -145,6 +145,8 @@ LIGHTRAG_PARSER=pdf:mineru-iteP,docx:mineru-iteP,txt:legacy-F,md:legacy-F
 ```
 
 不要写成 `*.pdf:mineru-iteP`，否则官方 routing 匹配不到，会回退到 legacy parser。
+当前官方 MinerU routing 不支持 `tif/tiff`，本地脚本默认不会扫描这两类文件；旧 env
+里残留的 `tif/tiff:mineru-...` 规则会被脚本自动丢弃。
 
 ## 建库
 

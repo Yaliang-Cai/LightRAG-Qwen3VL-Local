@@ -34,15 +34,14 @@ DEFAULT_MAX_ASYNC = 16
 DEFAULT_EMBEDDING_BATCH_NUM = 4
 LOCAL_HYBRID_VECTOR_STORAGE = "QdrantHybridBM25VectorDBStorage"
 DEFAULT_EXTENSIONS = (
-    ".pdf,.jpg,.jpeg,.png,.bmp,.tiff,.tif,.gif,.webp,"
+    ".pdf,.jpg,.jpeg,.png,.bmp,.gif,.webp,"
     ".doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.md"
 )
 DEFAULT_LIGHTRAG_PARSER = (
     "pdf:mineru-iteP,doc:mineru-iteP,docx:mineru-iteP,"
     "ppt:mineru-iteP,pptx:mineru-iteP,xls:mineru-iteP,"
     "xlsx:mineru-iteP,png:mineru-iteP,jpg:mineru-iteP,"
-    "jpeg:mineru-iteP,bmp:mineru-iteP,tiff:mineru-iteP,"
-    "tif:mineru-iteP,gif:mineru-iteP,webp:mineru-iteP,"
+    "jpeg:mineru-iteP,bmp:mineru-iteP,gif:mineru-iteP,webp:mineru-iteP,"
     "txt:legacy-F,md:legacy-F"
 )
 TEXT_EXTENSIONS = {
@@ -81,6 +80,7 @@ TEXT_EXTENSIONS = {
     ".less",
 }
 OFFICE_EXTENSIONS = {".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
+UNSUPPORTED_MINERU_SUFFIXES = {"tif", "tiff"}
 
 
 @dataclass(frozen=True)
@@ -175,6 +175,9 @@ def _normalize_lightrag_parser_rules(value: str) -> str:
             pattern = pattern[2:]
         elif pattern.startswith("."):
             pattern = pattern[1:]
+        engine_name = engine.strip().split("-", 1)[0].lower()
+        if engine_name == "mineru" and pattern in UNSUPPORTED_MINERU_SUFFIXES:
+            continue
         rules.append(f"{pattern}:{engine.strip()}")
     return ",".join(rules) if rules else value
 

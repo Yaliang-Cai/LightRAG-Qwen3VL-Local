@@ -119,6 +119,8 @@ def test_runtime_env_defaults_match_local_concurrency(monkeypatch, tmp_path):
     assert "docx:mineru-iteP" in adapter.os.environ["LIGHTRAG_PARSER"]
     assert "txt:legacy-F" in adapter.os.environ["LIGHTRAG_PARSER"]
     assert "*.docx" not in adapter.os.environ["LIGHTRAG_PARSER"]
+    assert "tiff:mineru" not in adapter.os.environ["LIGHTRAG_PARSER"]
+    assert "tif:mineru" not in adapter.os.environ["LIGHTRAG_PARSER"]
     assert adapter.os.environ["QDRANT_ENABLE_SPARSE_BM25"] == "true"
     assert adapter.os.environ["QDRANT_SPARSE_BM25_MODEL"] == "Qdrant/bm25"
     assert adapter.os.environ["QDRANT_RETRIEVAL_MODE"] == "hybrid"
@@ -165,7 +167,7 @@ def test_legacy_glob_parser_rules_are_normalized(monkeypatch, tmp_path):
     adapter = load_adapter()
     monkeypatch.setenv(
         "LIGHTRAG_PARSER",
-        "*.pdf:mineru-iteP,*.docx:mineru-iteP,.txt:legacy-F",
+        "*.pdf:mineru-iteP,*.docx:mineru-iteP,.tiff:mineru-iteP,tif:mineru-iteP,.txt:legacy-F",
     )
     monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
 
