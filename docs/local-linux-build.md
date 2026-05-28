@@ -286,6 +286,9 @@ LightRAG 并发是分层的：
 多模态压力主要由 `VLM_PROCESS_ENABLE`、`VLM_MAX_ASYNC_LLM`、parse/analyze worker
 和基础 `MAX_ASYNC` 共同控制。Qwen3-VL 显存不稳时，优先把
 `MAX_PARALLEL_ANALYZE` 和 `VLM_MAX_ASYNC_LLM` 降到 `1`。
+本地 embedding/reranker 模型在脚本内对首次加载做了线程锁，避免多个 worker 同时
+初始化同一个 CUDA 模型触发 meta tensor 问题；模型加载完成后仍按
+`EMBEDDING_FUNC_MAX_ASYNC` 并发处理 embedding 调用。
 
 ## 多模态 token 限制
 

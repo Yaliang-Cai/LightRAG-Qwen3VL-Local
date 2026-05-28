@@ -49,6 +49,7 @@ def test_runtime_env_defaults_match_local_concurrency(monkeypatch, tmp_path):
         "MAX_PARALLEL_PARSE_MINERU",
         "MAX_PARALLEL_PARSE_DOCLING",
         "MAX_PARALLEL_ANALYZE",
+        "EMBEDDING_FUNC_MAX_ASYNC",
         "EMBEDDING_BATCH_NUM",
         "RAGANYTHING_EMBEDDING_BATCH_NUM",
         "MAX_EXTRACT_INPUT_TOKENS",
@@ -99,6 +100,7 @@ def test_runtime_env_defaults_match_local_concurrency(monkeypatch, tmp_path):
     assert adapter.os.environ["MAX_PARALLEL_PARSE_MINERU"] == "1"
     assert adapter.os.environ["MAX_PARALLEL_PARSE_DOCLING"] == "1"
     assert adapter.os.environ["MAX_PARALLEL_ANALYZE"] == "2"
+    assert adapter.os.environ["EMBEDDING_FUNC_MAX_ASYNC"] == "4"
     assert adapter.os.environ["EMBEDDING_BATCH_NUM"] == "4"
     assert adapter.os.environ["RAGANYTHING_EMBEDDING_BATCH_NUM"] == "4"
     assert adapter.os.environ["MAX_EXTRACT_INPUT_TOKENS"] == "20480"

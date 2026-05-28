@@ -9,6 +9,7 @@ import logging
 import os
 import shutil
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -891,14 +892,16 @@ def _make_embedding_func():
         _env_int("EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM),
     )
     model_holder: dict[str, SentenceTransformer] = {}
+    model_lock = threading.Lock()
 
     def get_model() -> SentenceTransformer:
-        model = model_holder.get("model")
-        if model is None:
-            LOGGER.info("Loading embedding model: %s on %s", model_path, device)
-            model = SentenceTransformer(model_path, device=device)
-            model_holder["model"] = model
-        return model
+        with model_lock:
+            model = model_holder.get("model")
+            if model is None:
+                LOGGER.info("Loading embedding model: %s on %s", model_path, device)
+                model = SentenceTransformer(model_path, device=device)
+                model_holder["model"] = model
+            return model
 
     async def compute(texts: list[str], **_: Any) -> np.ndarray:
         if not texts:
@@ -948,14 +951,16 @@ def _make_rerank_func():
     device = os.getenv("RAGANYTHING_DEVICE", "cuda:0")
     batch_size = _env_int("RAGANYTHING_RERANK_BATCH_SIZE", 8)
     model_holder: dict[str, CrossEncoder] = {}
+    model_lock = threading.Lock()
 
     def get_model() -> CrossEncoder:
-        model = model_holder.get("model")
-        if model is None:
-            LOGGER.info("Loading reranker model: %s on %s", model_path, device)
-            model = CrossEncoder(model_path, device=device)
-            model_holder["model"] = model
-        return model
+        with model_lock:
+            model = model_holder.get("model")
+            if model is None:
+                LOGGER.info("Loading reranker model: %s on %s", model_path, device)
+                model = CrossEncoder(model_path, device=device)
+                model_holder["model"] = model
+            return model
 
     async def rerank(
         query: str,
