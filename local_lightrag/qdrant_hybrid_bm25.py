@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from qdrant_client import QdrantClient, models
 
 from lightrag.kg.qdrant_impl import (
     CREATED_AT_FIELD,
@@ -22,6 +21,7 @@ from lightrag.kg.qdrant_impl import (
 )
 from lightrag.kg.shared_storage import get_data_init_lock
 from lightrag.utils import logger
+from qdrant_client import QdrantClient, models
 
 DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "bm25"

@@ -163,6 +163,22 @@ def _parse_extensions(value: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(exts))
 
 
+def _normalize_lightrag_parser_rules(value: str) -> str:
+    rules: list[str] = []
+    for raw_item in value.replace(";", ",").split(","):
+        item = raw_item.strip()
+        if not item or ":" not in item:
+            continue
+        pattern, engine = item.split(":", 1)
+        pattern = pattern.strip().lower()
+        if pattern.startswith("*."):
+            pattern = pattern[2:]
+        elif pattern.startswith("."):
+            pattern = pattern[1:]
+        rules.append(f"{pattern}:{engine.strip()}")
+    return ",".join(rules) if rules else value
+
+
 def _setup_logging(report_dir: Path) -> Path:
     report_dir.mkdir(parents=True, exist_ok=True)
     log_file = report_dir / "build_internal_lightrag.log"
@@ -620,6 +636,11 @@ def _apply_runtime_env(config: BuildConfig) -> None:
         "LIGHTRAG_GRAPH_STORAGE": "Neo4JStorage",
         "LIGHTRAG_VECTOR_STORAGE": LOCAL_HYBRID_VECTOR_STORAGE,
         "LIGHTRAG_PARSER": DEFAULT_LIGHTRAG_PARSER,
+        "MINERU_API_MODE": "local",
+        "MINERU_LOCAL_ENDPOINT": "http://127.0.0.1:8000",
+        "MINERU_LOCAL_BACKEND": "hybrid-auto-engine",
+        "MINERU_LOCAL_PARSE_METHOD": "auto",
+        "MINERU_LOCAL_IMAGE_ANALYSIS": "true",
         "QDRANT_ENABLE_SPARSE_BM25": "true",
         "QDRANT_SPARSE_BM25_MODEL": "Qdrant/bm25",
         "QDRANT_RETRIEVAL_MODE": "hybrid",
@@ -659,6 +680,9 @@ def _apply_runtime_env(config: BuildConfig) -> None:
     os.environ["WORKING_DIR"] = config.working_dir.as_posix()
     os.environ["INPUT_DIR"] = config.input_dir.as_posix()
     os.environ["MAX_PARALLEL_INSERT"] = str(config.max_parallel_insert)
+    os.environ["LIGHTRAG_PARSER"] = _normalize_lightrag_parser_rules(
+        os.environ.get("LIGHTRAG_PARSER", DEFAULT_LIGHTRAG_PARSER)
+    )
 
 
 def _settings_summary(config: BuildConfig, files: list[Path] | None = None) -> dict[str, Any]:
@@ -690,6 +714,11 @@ def _settings_summary(config: BuildConfig, files: list[Path] | None = None) -> d
         "DEV_LIBREOFFICE_PDF_ROOT",
         "RERANK_BY_DEFAULT",
         "LIGHTRAG_PARSER",
+        "MINERU_API_MODE",
+        "MINERU_LOCAL_ENDPOINT",
+        "MINERU_LOCAL_BACKEND",
+        "MINERU_LOCAL_PARSE_METHOD",
+        "MINERU_LOCAL_IMAGE_ANALYSIS",
         "LIGHTRAG_VECTOR_STORAGE",
         "NEO4J_URI",
         "NEO4J_DATABASE",
@@ -781,6 +810,12 @@ def _log_settings(config: BuildConfig, files: list[Path] | None = None) -> None:
     LOGGER.info("Parser routing: %s", summary["env"].get("LIGHTRAG_PARSER", "<official default>"))
     if files is not None:
         LOGGER.info("Selected files: %d", len(files))
+
+
+def _validate_runtime_config() -> None:
+    from lightrag.parser.routing import validate_parser_routing_config
+
+    validate_parser_routing_config(os.getenv("LIGHTRAG_PARSER"))
 
 
 def _make_llm_func():
@@ -1326,6 +1361,7 @@ def main(argv: list[str] | None = None) -> int:
     if config.max_files is not None:
         files = files[: max(0, int(config.max_files))]
     _log_settings(config, files)
+    _validate_runtime_config()
     file_records = _build_file_reuse_preview(config, files)
     reuse = _reuse_summary(file_records, config)
     LOGGER.info(

@@ -85,7 +85,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
 pip install -e ".[api]"
-pip install sentence-transformers fastembed
+pip install sentence-transformers fastembed qdrant-client neo4j
 cp configs/local-qwen3vl.env.example configs/local-qwen3vl.env
 ```
 
@@ -103,6 +103,7 @@ Neo4j 和 Qdrant 使用本地服务即可，默认配置是：
 
 ```bash
 export NEO4J_URI=bolt://localhost:7687
+export NEO4J_DATABASE=neo4j
 export QDRANT_URL=http://localhost:6333
 ```
 

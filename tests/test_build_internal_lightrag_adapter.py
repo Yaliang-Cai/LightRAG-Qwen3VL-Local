@@ -161,6 +161,47 @@ def test_default_parser_routes_rich_files_to_mineru(monkeypatch, tmp_path):
     assert resolve_file_parser_directives(tmp_path / "doc.txt") == ("legacy", "F")
 
 
+def test_legacy_glob_parser_rules_are_normalized(monkeypatch, tmp_path):
+    adapter = load_adapter()
+    monkeypatch.setenv(
+        "LIGHTRAG_PARSER",
+        "*.pdf:mineru-iteP,*.docx:mineru-iteP,.txt:legacy-F",
+    )
+    monkeypatch.setenv("MINERU_LOCAL_ENDPOINT", "http://127.0.0.1:8000")
+
+    config = adapter.BuildConfig(
+        raw_dir=tmp_path / "raw",
+        storage_root=tmp_path / "storage",
+        working_dir=tmp_path / "working",
+        input_dir=tmp_path / "inputs",
+        report_dir=tmp_path / "reports",
+        workspace="test_workspace",
+        max_files=None,
+        max_parallel_insert=2,
+        recursive=True,
+        extensions=(".pdf",),
+        dry_run=True,
+        enable_build_rerank=False,
+        enable_query_rerank=True,
+        query=None,
+        query_file=None,
+        query_only=False,
+        query_mode="mix",
+        top_k=None,
+        chunk_top_k=None,
+    )
+
+    adapter._apply_runtime_env(config)
+
+    assert adapter.os.environ["LIGHTRAG_PARSER"] == (
+        "pdf:mineru-iteP,docx:mineru-iteP,txt:legacy-F"
+    )
+
+    from lightrag.parser.routing import resolve_file_parser_directives
+
+    assert resolve_file_parser_directives(tmp_path / "cached.pdf") == ("mineru", "iteP")
+
+
 def test_register_local_hybrid_bm25_storage(monkeypatch):
     adapter = load_adapter()
     from lightrag import kg
